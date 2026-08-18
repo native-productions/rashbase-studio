@@ -11,35 +11,46 @@ design system.
 
 ## Screenshots
 
-Connections grouped by environment, schema on the left, editor on the right. The
-env tag is the safety feature: a `PROD` connection never looks like a local one.
-
-![Connection list and SQL editor](assets/screenshots/home-database.png)
-
-A connection is a URL paste or a filled form, either way. Leaving the database
-blank treats the connection as a server and lists every database the role can
-open.
-
-![New connection sheet](assets/screenshots/new-connection.png)
-
-Table contents in the virtualized grid. Column types are stated in the header,
-the footer carries the row count and the timings, and each open table is a tab.
-
-![Table contents in the result grid](assets/screenshots/database-content.png)
-
-Query results in the same grid. Results of a query are not editable, and the
-panel says so rather than failing on save.
-
-![Query results](assets/screenshots/database-query.png)
-
-One row read in the side panel, every column at full width, JSONB expanded in
-place.
-
-![Row detail panel](assets/screenshots/data-viewer.png)
-
-A JSONB cell opened on its own, as a tree or as raw text.
-
-![JSON viewer](assets/screenshots/json-viewer.png)
+<table>
+  <tr>
+    <td colspan="2" align="center">
+      <img src="assets/screenshots/home-database.png" alt="Connection list and SQL editor" width="100%">
+      <br>
+      <sub><b>Connections and editor.</b> Grouped by environment, so a <code>PROD</code> connection never looks like a local one.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="assets/screenshots/database-content.png" alt="Table contents in the result grid" width="100%">
+      <br>
+      <sub><b>Result grid.</b> Virtualized, column types in the header, row count and timings in the footer.</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="assets/screenshots/database-query.png" alt="Query results" width="100%">
+      <br>
+      <sub><b>Query results.</b> Same grid, but not editable — the panel says so rather than failing on save.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="assets/screenshots/new-connection.png" alt="New connection sheet" width="100%">
+      <br>
+      <sub><b>New connection.</b> Paste a URL or fill the form. A blank database lists every one the role can open.</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="assets/screenshots/data-viewer.png" alt="Row detail panel" width="100%">
+      <br>
+      <sub><b>Row detail.</b> One row at full width, JSONB expanded in place.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center">
+      <img src="assets/screenshots/json-viewer.png" alt="JSON viewer" width="100%">
+      <br>
+      <sub><b>JSON viewer.</b> A JSONB cell on its own, as a tree or as raw text.</sub>
+    </td>
+  </tr>
+</table>
 
 ## Database support
 
