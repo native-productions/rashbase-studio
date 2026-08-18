@@ -42,7 +42,7 @@ function EmptyState() {
           only ever produced a tab with nothing to run against. */}
       <button
         onClick={() => setSheet(true, null)}
-        className="pressable rounded bg-accent px-3 py-1.5 text-[12px] font-medium text-base"
+        className="pressable rounded bg-accent px-3 py-1.5 text-[12px] font-medium text-canvas"
       >
         New connection
       </button>
@@ -124,7 +124,10 @@ export default function App() {
       <div className="flex min-h-0 flex-1">
         {sidebarVisible && <Sidebar />}
 
-        <main ref={mainRef} className="flex min-w-0 flex-1 flex-col">
+        {/* `canvas`, not `base`: the chrome around this is translucent when
+            window effects are on, and the grid is the one surface whose
+            legibility may not depend on the desktop behind the window. */}
+        <main ref={mainRef} className="flex min-w-0 flex-1 flex-col bg-canvas">
           {!tab ? (
             <EmptyState />
           ) : (

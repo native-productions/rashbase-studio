@@ -19,10 +19,15 @@
         "minHeight": 520,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "backgroundColor": "#2a2925",
-        "acceptFirstMouse": true
+        "acceptFirstMouse": true,
+        "transparent": true,
+        "windowEffects": {
+          "effects": ["underWindowBackground", "mica", "acrylic"],
+          "state": "active"
+        }
       }
     ],
+    "macOSPrivateApi": true,
     "security": {
       "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost; font-src 'self' data:"
     }

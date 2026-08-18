@@ -102,7 +102,7 @@ export function DestructiveDialog({
           </div>
 
           <div className="flex flex-col gap-3 px-5 py-4">
-            <pre className="overflow-x-auto rounded border border-line-soft bg-base px-2.5 py-2 font-mono text-[12px] text-ink select-text">
+            <pre className="overflow-x-auto rounded border border-line-soft bg-canvas px-2.5 py-2 font-mono text-[12px] text-ink select-text">
               {sql}
             </pre>
 
@@ -134,7 +134,7 @@ export function DestructiveDialog({
                   }}
                   spellCheck={false}
                   autoComplete="off"
-                  className="rounded border border-line-soft bg-base px-2 py-1.5 font-mono text-[12px] text-ink focus:border-danger focus:outline-none"
+                  className="rounded border border-line-soft bg-canvas px-2 py-1.5 font-mono text-[12px] text-ink focus:border-danger focus:outline-none"
                 />
               </label>
             )}
@@ -153,7 +153,7 @@ export function DestructiveDialog({
             <button
               disabled={!confirmed || busy}
               onClick={() => void run()}
-              className="pressable rounded bg-danger px-3 py-1.5 text-[12px] font-medium text-base disabled:pointer-events-none disabled:opacity-40"
+              className="pressable rounded bg-danger px-3 py-1.5 text-[12px] font-medium text-canvas disabled:pointer-events-none disabled:opacity-40"
             >
               {busy ? "Running…" : dropping ? "Drop" : "Truncate"}
             </button>

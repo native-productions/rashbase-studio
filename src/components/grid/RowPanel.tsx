@@ -306,7 +306,7 @@ function FieldEditor({
         <span className="ml-auto font-mono">{multiline ? "⌘⏎" : "⏎"}</span>
         <button
           onClick={onCommit}
-          className="pressable rounded bg-accent px-2 py-0.5 text-[10px] font-medium text-base"
+          className="pressable rounded bg-accent px-2 py-0.5 text-[10px] font-medium text-canvas"
         >
           Save
         </button>

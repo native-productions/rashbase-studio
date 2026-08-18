@@ -162,6 +162,14 @@ export const COMMANDS: Command[] = [
     run: () => s().setPalette(s().palette === "commands" ? null : "commands"),
   },
   {
+    // No binding. It is set once and then left alone, and every ⌘-letter this
+    // app could reach is worth more to something used daily.
+    id: "view.translucency",
+    label: "Toggle window translucency",
+    group: "View",
+    run: () => s().toggleTranslucency(),
+  },
+  {
     id: "view.rowPanel",
     label: "Toggle row panel",
     group: "View",

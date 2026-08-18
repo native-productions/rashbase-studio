@@ -95,7 +95,7 @@ export function DeleteConnectionDialog({
               autoFocus
               disabled={busy}
               onClick={() => void run()}
-              className="pressable rounded bg-danger px-3 py-1.5 text-[12px] font-medium text-base disabled:pointer-events-none disabled:opacity-40"
+              className="pressable rounded bg-danger px-3 py-1.5 text-[12px] font-medium text-canvas disabled:pointer-events-none disabled:opacity-40"
             >
               {busy ? "Deleting…" : "Delete"}
             </button>

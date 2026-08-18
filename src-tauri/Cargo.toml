@@ -15,7 +15,11 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# `macos-private-api` is what makes a transparent window legal on macOS, and a
+# transparent window is what the vibrancy effect renders behind. It also makes
+# the build ineligible for the Mac App Store; distribution here is direct
+# download and Homebrew, so that is not a cost we pay.
+tauri = { version = "2", features = ["macos-private-api"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

@@ -107,7 +107,7 @@ export function CellEditor({
   };
 
   const field =
-    "w-full rounded border border-line-soft bg-base px-1.5 py-1 font-mono text-[12px] text-ink outline-none focus:border-accent placeholder:text-null placeholder:italic";
+    "w-full rounded border border-line-soft bg-canvas px-1.5 py-1 font-mono text-[12px] text-ink outline-none focus:border-accent placeholder:text-null placeholder:italic";
 
   return (
     <div
@@ -188,7 +188,7 @@ export function CellEditor({
           <span className="ml-auto font-mono">{multiline ? "⌘⏎" : "⏎"}</span>
           <button
             onClick={onCommit}
-            className="pressable rounded bg-accent px-2 py-0.5 text-[10px] font-medium text-base"
+            className="pressable rounded bg-accent px-2 py-0.5 text-[10px] font-medium text-canvas"
           >
             Save
           </button>

@@ -10,9 +10,14 @@
 
   Scene that decides the palette: 11pm, warm desk lamp, 14-inch laptop, forty
   minutes staring at a result set hunting for a NULL in column 7. That forces
-  dark-but-not-black (high contrast at moderate ambient light is fatiguing),
   warm rather than blue-black, and low chroma on every surface so the *data*
   is the brightest thing on screen.
+
+  The ground is low: canvas sits at L 0.145. The ink came down with it, so the
+  contrast ratio is held near where it already was (12.7:1, from 11.7:1)
+  instead of rising. That is the whole difference between a dark palette and
+  the neon-on-black tools PRODUCT.md names as an anti-reference: lower
+  luminance, same ratio.
 
   Colour strategy: Restrained. Tinted neutrals plus one accent under 10% of
   surface area. The yellow appears on active tab, focus ring, selected cell,
@@ -22,12 +27,23 @@
   no #000, no #fff.
 */
 @theme {
-  /* Ground */
-  --color-base: oklch(0.19 0.008 90);
-  --color-raised: oklch(0.23 0.008 90);
-  --color-overlay: oklch(0.27 0.009 90);
-  --color-row-alt: oklch(0.21 0.008 90);
-  --color-hover: oklch(0.25 0.009 90);
+  /* Ground.
+
+     `canvas` is the one surface that never goes translucent: the grid and the
+     editor sit on it, and cell legibility must not depend on what the user
+     happens to have as a wallpaper. Everything else is chrome and carries
+     `--surface-alpha`, which is 1 unless translucency is on.
+
+     `hover` and `accent-wash` are films rather than fills. A solid fill over a
+     translucent sidebar punches an opaque hole through the vibrancy, so the
+     hover state reads as a hole instead of a highlight. As alpha they tint
+     whatever is behind them, and the opaque path looks the same either way. */
+  --color-canvas: oklch(0.145 0.008 90);
+  --color-base: oklch(0.145 0.008 90 / var(--surface-alpha));
+  --color-raised: oklch(0.175 0.008 90 / var(--surface-alpha));
+  --color-overlay: oklch(0.205 0.009 90 / var(--surface-alpha-solid));
+  --color-row-alt: oklch(0.168 0.008 90);
+  --color-hover: oklch(0.85 0.01 90 / 0.055);
 
   /* Dialogs. Darker than the app behind them, and darker than the scrim over
      it, so the sheet reads as a hole punched to a lower level and the filled
@@ -36,38 +52,40 @@
      Fields carry no border: on a dark ground a filled field says "type here"
      more plainly than an outlined one, and one less line per row is what lets
      the rows sit close together without looking caged. */
-  --color-sheet: oklch(0.16 0.008 90);
-  --color-field: oklch(0.35 0.008 90);
-  --color-field-hover: oklch(0.38 0.008 90);
+  --color-sheet: oklch(0.125 0.008 90 / var(--surface-alpha-solid));
+  --color-field: oklch(0.285 0.008 90);
+  --color-field-hover: oklch(0.315 0.008 90);
 
   /* Lines */
-  --color-line: oklch(0.32 0.008 90);
-  --color-line-soft: oklch(0.26 0.008 90);
+  --color-line: oklch(0.275 0.008 90);
+  --color-line-soft: oklch(0.21 0.008 90);
 
   /* Ink */
-  --color-ink: oklch(0.93 0.006 90);
-  --color-ink-muted: oklch(0.7 0.006 90);
-  --color-ink-faint: oklch(0.55 0.006 90);
+  --color-ink: oklch(0.89 0.006 90);
+  --color-ink-muted: oklch(0.68 0.006 90);
+  /* Up, not down. At the old value the 10px eyebrow labels sat at 3.7:1 on the
+     old ground; on the lower ground 0.56 buys 4.6:1 for free. */
+  --color-ink-faint: oklch(0.56 0.006 90);
 
   /* Accent — kept under 10% of surface */
-  --color-accent: oklch(0.82 0.17 88);
-  --color-accent-dim: oklch(0.62 0.13 88);
-  --color-accent-wash: oklch(0.3 0.04 88);
+  --color-accent: oklch(0.7 0.12 88);
+  --color-accent-dim: oklch(0.55 0.1 88);
+  --color-accent-wash: oklch(0.7 0.12 88 / 0.17);
   /* Selected text. The accent at low alpha rather than a wash: a wash sits
      within a few points of lightness of every surface here, so a selection
      drawn in it was invisible on the surface it covered. Alpha, so the text
      underneath keeps its own colour. */
-  --color-selection: oklch(0.82 0.17 88 / 0.35);
-  --color-selection-soft: oklch(0.82 0.17 88 / 0.16);
+  --color-selection: oklch(0.72 0.13 88 / 0.4);
+  --color-selection-soft: oklch(0.72 0.13 88 / 0.19);
 
   /* Semantic. Deliberately lower chroma than the accent so a column of
      numbers never competes with the one thing that means "focus". */
-  --color-num: oklch(0.78 0.09 200);
-  --color-str: oklch(0.8 0.08 145);
-  --color-bool: oklch(0.78 0.09 300);
-  --color-null: oklch(0.5 0.02 90);
-  --color-danger: oklch(0.65 0.16 25);
-  --color-warn: oklch(0.76 0.12 65);
+  --color-num: oklch(0.73 0.085 200);
+  --color-str: oklch(0.75 0.075 145);
+  --color-bool: oklch(0.73 0.085 300);
+  --color-null: oklch(0.45 0.02 90);
+  --color-danger: oklch(0.61 0.15 25);
+  --color-warn: oklch(0.7 0.11 65);
 
   --font-sans: "Instrument Sans Variable", "Instrument Sans", system-ui, sans-serif;
   --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, monospace;
@@ -79,6 +97,25 @@
   --spacing-traffic: 78px;
 }
 
+/*
+  Translucency. Opaque is the default, which is also the Linux path and the
+  path when the preference is off: every surface paints solid and the fact
+  that the window itself is transparent never shows.
+
+  Two knobs rather than one. Chrome can afford more bleed than a menu or a
+  sheet can: those are read, and their text sits on whatever the desktop
+  happens to be.
+*/
+:root {
+  --surface-alpha: 1;
+  --surface-alpha-solid: 1;
+}
+
+:root[data-translucent="on"] {
+  --surface-alpha: 0.72;
+  --surface-alpha-solid: 0.88;
+}
+
 @layer base {
   html,
   body,
@@ -88,6 +125,8 @@
   }
 
   body {
+    /* Translucent when the effect is on, solid otherwise. The grid and editor
+       repaint themselves on `canvas`, so nothing readable rides on this. */
     background: var(--color-base);
     color: var(--color-ink);
     font-family: var(--font-sans);
@@ -139,13 +178,13 @@
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: oklch(0.35 0.008 90);
+    background: oklch(0.29 0.008 90);
     border: 3px solid transparent;
     background-clip: content-box;
     border-radius: 5px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: oklch(0.45 0.008 90);
+    background: oklch(0.39 0.008 90);
     border: 3px solid transparent;
     background-clip: content-box;
   }

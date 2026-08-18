@@ -120,7 +120,7 @@ export function PageSizeMenu({
                   e.preventDefault();
                   commit(Number(draft));
                 }}
-                className="w-full min-w-0 rounded border border-line-soft bg-base px-1.5 py-1 text-right font-mono text-[11px] text-ink focus:border-accent focus:outline-none"
+                className="w-full min-w-0 rounded border border-line-soft bg-canvas px-1.5 py-1 text-right font-mono text-[11px] text-ink focus:border-accent focus:outline-none"
               />
             </label>
           </div>

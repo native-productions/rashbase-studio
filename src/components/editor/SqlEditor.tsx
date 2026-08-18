@@ -59,7 +59,7 @@ const theme = EditorView.theme(
     "&": {
       height: "100%",
       fontSize: "12px",
-      backgroundColor: "var(--color-base)",
+      backgroundColor: "var(--color-canvas)",
       color: "var(--color-ink)",
     },
     ".cm-content": {
@@ -70,7 +70,7 @@ const theme = EditorView.theme(
     ".cm-scroller": { fontFamily: "var(--font-mono)", lineHeight: "1.6" },
     "&.cm-focused": { outline: "none" },
     ".cm-gutters": {
-      backgroundColor: "var(--color-base) !important",
+      backgroundColor: "var(--color-canvas) !important",
       color: "var(--color-ink-faint) !important",
       border: "none !important",
       paddingRight: "4px",
@@ -85,7 +85,7 @@ const theme = EditorView.theme(
       hides the selection on whichever line holds the cursor — which is every
       line after ⌘A, and the exact reason the last line looked unselected.
     */
-    ".cm-activeLine": { backgroundColor: "oklch(0.85 0.02 90 / 0.045) !important" },
+    ".cm-activeLine": { backgroundColor: "oklch(0.85 0.02 90 / 0.06) !important" },
     ".cm-selectionBackground": { backgroundColor: "var(--color-selection) !important" },
     "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground": {
       backgroundColor: "var(--color-selection) !important",

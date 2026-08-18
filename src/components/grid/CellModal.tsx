@@ -101,7 +101,7 @@ export function CellModal() {
                 no tree, and a disabled tab would only be a question the surface
                 already knows the answer to. */}
             {doc && (
-              <div className="ml-3 flex shrink-0 gap-px rounded bg-base p-px">
+              <div className="ml-3 flex shrink-0 gap-px rounded bg-canvas p-px">
                 {(["tree", "raw"] as const).map((m) => (
                   <button
                     key={m}
@@ -125,7 +125,7 @@ export function CellModal() {
             </Dialog.Close>
           </header>
 
-          <div className="min-h-0 flex-1 overflow-auto bg-base py-1.5">
+          <div className="min-h-0 flex-1 overflow-auto bg-canvas py-1.5">
             {mode === "tree" && doc ? (
               <JsonTree
                 value={doc}
@@ -173,7 +173,7 @@ export function CellModal() {
                 <button
                   disabled={!canSave}
                   onClick={() => void commitCellView(text)}
-                  className="pressable shrink-0 rounded bg-accent px-2.5 py-0.5 text-[11px] font-medium text-base disabled:bg-line disabled:text-ink-faint"
+                  className="pressable shrink-0 rounded bg-accent px-2.5 py-0.5 text-[11px] font-medium text-canvas disabled:bg-line disabled:text-ink-faint"
                 >
                   Save
                 </button>

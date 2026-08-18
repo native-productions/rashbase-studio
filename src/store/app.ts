@@ -10,6 +10,7 @@ import {
 } from "@/lib/utils/sql";
 import { asDbError } from "@/lib/utils/errors";
 import { loadPinnedTabs, savePinnedTabs } from "@/lib/pinnedTabs";
+import { applyTranslucency, loadTranslucency, saveTranslucency } from "@/lib/translucency";
 import { isServerOnly } from "@/lib/utils/connections";
 import { editableReason, hasRows, tabColumns } from "@/lib/utils/tabs";
 import { rowKeysFor } from "@/lib/utils/rowKeys";
@@ -82,6 +83,12 @@ interface AppState {
   activeTabId: string | null;
 
   sidebarVisible: boolean;
+  /**
+   * Whether the desktop shows through the chrome. Here rather than in a
+   * settings module because the command palette is the only surface that
+   * changes it, and the palette reads this store.
+   */
+  translucent: boolean;
   palette: PaletteMode | null;
   /**
    * `credentialLost` means the sheet was opened because the stored password
@@ -207,6 +214,7 @@ interface AppState {
   commitCellView: (text: string | null) => Promise<void>;
 
   toggleSidebar: () => void;
+  toggleTranslucency: () => void;
   setPalette: (mode: PaletteMode | null) => void;
   setSheet: (open: boolean, editing?: ConnectionConfig | null, credentialLost?: boolean) => void;
   setToast: (toast: AppState["toast"]) => void;
@@ -333,6 +341,7 @@ export const useApp = create<AppState>((set, get) => {
   tabs: [],
   activeTabId: null,
   sidebarVisible: true,
+  translucent: loadTranslucency(),
   palette: null,
   sheet: { open: false, editing: null, credentialLost: false, sshSecretLost: false },
   filterEditor: null,
@@ -1109,6 +1118,14 @@ export const useApp = create<AppState>((set, get) => {
   },
 
   toggleSidebar: () => set((s) => ({ sidebarVisible: !s.sidebarVisible })),
+  // No transition. This is a configuration change, and one that happens
+  // instantly is the honest reading of it.
+  toggleTranslucency: () => {
+    const on = !get().translucent;
+    set({ translucent: on });
+    saveTranslucency(on);
+    void applyTranslucency(on);
+  },
   setPalette: (mode) => set({ palette: mode }),
   // Both "lost" flags are cleared here rather than accepted as arguments: the
   // only thing that can know a secret is unreadable is the connect attempt

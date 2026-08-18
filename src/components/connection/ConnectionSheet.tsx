@@ -109,7 +109,7 @@ function Switch({
         aria-hidden="true"
         className={[
           "block size-2.5 rounded-full duration-150 ease-[var(--ease-out-quart)] transition-transform",
-          checked ? "translate-x-[13px] bg-base" : "translate-x-[2px] bg-ink-faint",
+          checked ? "translate-x-[13px] bg-canvas" : "translate-x-[2px] bg-ink-faint",
         ].join(" ")}
       />
     </button>
@@ -378,7 +378,7 @@ export function ConnectionSheet() {
                   // in the window, with the chosen segment tinted rather than
                   // raised again: the colour is the answer here, and a second
                   // step of lightness under it only mutes the colour.
-                  className="flex h-7 items-center gap-0.5 rounded-md bg-base p-0.5"
+                  className="flex h-7 items-center gap-0.5 rounded-md bg-canvas p-0.5"
                 >
                   {ENVIRONMENTS.map((env) => {
                     const on = form.environment === env.id;
@@ -653,7 +653,7 @@ export function ConnectionSheet() {
               <button
                 disabled={busy || testing}
                 onClick={() => void submit()}
-                className="pressable h-7 rounded-md bg-accent px-3 text-[12px] font-medium text-base hover:bg-accent/90 disabled:opacity-50"
+                className="pressable h-7 rounded-md bg-accent px-3 text-[12px] font-medium text-canvas hover:bg-accent/90 disabled:opacity-50"
               >
                 {busy ? "Connecting…" : "Connect"}
               </button>

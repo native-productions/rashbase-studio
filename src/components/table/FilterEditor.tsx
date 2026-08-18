@@ -168,7 +168,7 @@ export function FilterEditor({
           <button
             onClick={commit}
             disabled={!ready}
-            className="pressable rounded bg-accent px-2.5 py-1 text-[11px] font-medium text-base disabled:pointer-events-none disabled:opacity-30"
+            className="pressable rounded bg-accent px-2.5 py-1 text-[11px] font-medium text-canvas disabled:pointer-events-none disabled:opacity-30"
           >
             Apply
           </button>
