@@ -1,6 +1,6 @@
 [package]
 name = "rashbase-studio"
-version = "0.1.1"
+version = "0.2.0"
 description = "Free, AI-native database client"
 authors = ["Native Productions"]
 edition = "2021"
