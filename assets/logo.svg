@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none">
+  <title>Rashbase Studio</title>
+  <!--
+    Concept D: a 2x2 grid with one cell selected.
+    Geometry sits on whole units of a 24 grid so strokes land on pixel
+    boundaries at 16, 24, 32, 48, and 64px.
+
+    - top-left cell is filled: the selection
+    - bottom-right corner is notched away: the cursor leaving the grid
+  -->
+
+  <!-- selected cell -->
+  <rect x="3" y="3" width="8" height="8" rx="1" fill="currentColor" />
+
+  <!-- top-right cell -->
+  <rect x="13" y="3" width="8" height="8" rx="1"
+        stroke="currentColor" stroke-width="1.5" opacity="0.45" />
+
+  <!-- bottom-left cell -->
+  <rect x="3" y="13" width="8" height="8" rx="1"
+        stroke="currentColor" stroke-width="1.5" opacity="0.45" />
+
+  <!-- bottom-right cell, outer corner notched off -->
+  <path d="M13.8 13h6.4a.8.8 0 0 1 .8.8v2.7L16.5 21h-2.7a.8.8 0 0 1-.8-.8v-6.4a.8.8 0 0 1 .8-.8Z"
+        stroke="currentColor" stroke-width="1.5" opacity="0.45" stroke-linejoin="round" />
+</svg>

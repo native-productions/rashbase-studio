@@ -1,0 +1,1122 @@
+import { create } from "zustand";
+import { ipc } from "@/lib/ipc";
+import { CREDENTIAL_UNREADABLE, SSH_SECRET_REQUIRED } from "@/lib/constants/errors";
+import { DEFAULT_PAGE_LIMIT, DEFAULT_QUERY_LIMIT } from "@/lib/constants/grid";
+import {
+  dropStatement,
+  tableCountSql,
+  tablePageSql,
+  truncateStatement,
+} from "@/lib/utils/sql";
+import { asDbError } from "@/lib/utils/errors";
+import { loadPinnedTabs, savePinnedTabs } from "@/lib/pinnedTabs";
+import { isServerOnly } from "@/lib/utils/connections";
+import { editableReason, hasRows, tabColumns } from "@/lib/utils/tabs";
+import { rowKeysFor } from "@/lib/utils/rowKeys";
+import { pagedSql, unpageableReason } from "@/lib/utils/statement";
+import type {
+  ConnectionConfig,
+  ConnectionInfo,
+  DbObject,
+  Filter,
+  FunctionEntry,
+  PaletteMode,
+  QueryTab,
+  SchemaEntry,
+  Sort,
+  TableEntry,
+} from "@/lib/types";
+
+let tabSeq = 0;
+function newTab(connectionId: string | null, object: DbObject | null = null): QueryTab {
+  tabSeq += 1;
+  return {
+    id: `tab-${tabSeq}`,
+    connectionId,
+    title: object ? object.name : `Query ${tabSeq}`,
+    object,
+    pinned: false,
+    // A table page and a query cap are the same number in different clothes,
+    // so they share the field — but not the default. A table is browsed a page
+    // at a time; a query is usually a question whose answer should fit.
+    page: { limit: object ? DEFAULT_PAGE_LIMIT : DEFAULT_QUERY_LIMIT, offset: 0 },
+    paged: false,
+    pageNote: null,
+    sort: null,
+    filters: [],
+    rowCount: null,
+    view: hasRows(object) ? "data" : "definition",
+    columns: null,
+    indexes: null,
+    selection: null,
+    definition: null,
+    sql: hasRows(object)
+      ? tablePageSql({
+          schema: object!.schema,
+          table: object!.name,
+          limit: DEFAULT_PAGE_LIMIT,
+          offset: 0,
+        })
+      : "",
+    results: [],
+    activeResultIndex: 0,
+    running: false,
+    error: null,
+    clientMs: null,
+  };
+}
+
+interface AppState {
+  connections: ConnectionConfig[];
+  open: Record<string, ConnectionInfo>;
+  activeConnectionId: string | null;
+
+  /** Databases on each connection's server, keyed by connection id. */
+  databases: Record<string, string[]>;
+  schemas: Record<string, SchemaEntry[]>;
+  tables: Record<string, TableEntry[]>;
+  functions: Record<string, FunctionEntry[]>;
+  expandedSchemas: Record<string, boolean>;
+
+  tabs: QueryTab[];
+  activeTabId: string | null;
+
+  sidebarVisible: boolean;
+  palette: PaletteMode | null;
+  /**
+   * `credentialLost` means the sheet was opened because the stored password
+   * could not be read, which changes what an empty password field means: the
+   * saved secret is not worth keeping, so blank clears it instead.
+   *
+   * `sshSecretLost` is the same situation one layer down, on the tunnel's
+   * passphrase or jump-host password. Two flags rather than one, because the
+   * sheet has two secret fields and reopening on the wrong one asks the user
+   * to retype something that was never the problem.
+   */
+  sheet: {
+    open: boolean;
+    editing: ConnectionConfig | null;
+    credentialLost: boolean;
+    sshSecretLost: boolean;
+  };
+  /**
+   * Which filter the editor is open on. Lives here rather than in the bar so
+   * ⌘F can open it. `index: null` means a filter that does not exist yet.
+   */
+  filterEditor: { tabId: string; index: number | null } | null;
+  /**
+   * The row panel. Global rather than per tab, like `sidebarVisible`: it is a
+   * decision about the workspace, not about one table.
+   */
+  rowPanel: boolean;
+  /**
+   * The open cell editor. Here rather than in the grid because the status bar
+   * renders the statement it is about to run, and because the grid and the row
+   * panel are two doors into the same edit.
+   */
+  /**
+   * The one cell being written to, and which surface opened it. Both the grid
+   * and the row panel can start an edit on the same cell, and without the
+   * `where` tag both would draw an editor for it at once.
+   */
+  cellEdit: {
+    tabId: string;
+    row: number;
+    col: number;
+    draft: string;
+    isNull: boolean;
+    where: "grid" | "panel";
+  } | null;
+  /**
+   * The cell open in the expanded editor, if any.
+   *
+   * Separate from `cellEdit` because expanding is also how a value is *read*:
+   * a query result cannot be written to and still deserves somewhere to show a
+   * jsonb document at full size. The write, when there is one, is handed back
+   * to `cellEdit` so there is still exactly one path to the database.
+   */
+  cellView: { tabId: string; row: number; col: number } | null;
+  /**
+   * What the app is waiting on a server for: keyed by the thing that is
+   * waiting, valued by what to call it out loud.
+   *
+   * One map rather than a flag per call, because the surfaces that need this
+   * are not the ones that start it. The sidebar row that was clicked wants a
+   * spinner in place of its status dot, and the status bar wants a sentence,
+   * and neither of them is where `connect` is awaited. A connection over an
+   * SSH tunnel can take ten seconds; ten seconds of nothing is the app looking
+   * broken.
+   */
+  busy: Record<string, string>;
+  toast: { kind: "error" | "info"; text: string } | null;
+
+  loadConnections: () => Promise<void>;
+  connect: (config: ConnectionConfig, password?: string, sshSecret?: string) => Promise<void>;
+  disconnect: (id: string) => Promise<void>;
+  saveConnection: (
+    config: ConnectionConfig,
+    password?: string,
+    sshSecret?: string,
+  ) => Promise<void>;
+  deleteConnection: (id: string) => Promise<void>;
+
+  setActiveConnection: (id: string) => void;
+  loadDatabases: (connectionId: string) => Promise<void>;
+  openDatabase: (fromConnectionId: string, name: string) => Promise<void>;
+  toggleSchema: (connectionId: string, schema: string) => Promise<void>;
+  loadAllTables: (connectionId: string) => Promise<void>;
+  reloadSchema: (connectionId: string, schema: string) => Promise<void>;
+  dropObject: (connectionId: string, schema: string, name: string, kind: string) => Promise<void>;
+  truncateTable: (connectionId: string, schema: string, name: string) => Promise<void>;
+
+  openTab: (connectionId?: string | null) => void;
+  openObjectTab: (connectionId: string, object: DbObject) => void;
+  closeTab: (id: string) => void;
+  /** Closes every tab except this one and the pinned ones. */
+  closeOtherTabs: (id: string) => void;
+  togglePinTab: (id: string) => void;
+  setActiveTab: (id: string) => void;
+  cycleTab: (delta: number) => void;
+  setTabSql: (id: string, sql: string) => void;
+  setActiveResult: (tabId: string, index: number) => void;
+  runQuery: (tabId: string, sqlOverride?: string) => Promise<void>;
+  cancelQuery: (tabId: string) => Promise<void>;
+
+  setPageLimit: (tabId: string, limit: number) => void;
+  goPage: (tabId: string, delta: number) => void;
+  toggleSort: (tabId: string, column: string) => void;
+  setFilters: (tabId: string, filters: Filter[]) => void;
+  setFilterEditor: (editor: AppState["filterEditor"]) => void;
+  countExactRows: (tabId: string) => Promise<void>;
+  ensureColumns: (tabId: string) => Promise<void>;
+  setTabView: (tabId: string, view: QueryTab["view"]) => Promise<void>;
+
+  setSelection: (tabId: string, selection: QueryTab["selection"]) => void;
+  selectCell: (tabId: string, row: number, col: number) => void;
+  toggleRowPanel: () => void;
+  closeRowPanel: () => void;
+
+  beginEdit: (tabId: string, row: number, col: number, where?: "grid" | "panel") => void;
+  setEditDraft: (draft: string) => void;
+  setEditNull: (isNull: boolean) => void;
+  cancelEdit: () => void;
+  commitEdit: () => Promise<void>;
+
+  openCellView: (tabId: string, row: number, col: number) => void;
+  closeCellView: () => void;
+  commitCellView: (text: string | null) => Promise<void>;
+
+  toggleSidebar: () => void;
+  setPalette: (mode: PaletteMode | null) => void;
+  setSheet: (open: boolean, editing?: ConnectionConfig | null, credentialLost?: boolean) => void;
+  setToast: (toast: AppState["toast"]) => void;
+}
+
+const tableKey = (connectionId: string, schema: string) => `${connectionId}::${schema}`;
+
+/**
+ * Names for the entries in `busy`.
+ *
+ * Here rather than spelled out at each end, because the surface that draws the
+ * spinner is never the one that set the flag, and a typo in either half is a
+ * spinner that never appears or never stops.
+ */
+export const busyKey = {
+  connect: (connectionId: string) => `connect:${connectionId}`,
+  database: (connectionId: string, name: string) => `database:${connectionId}::${name}`,
+  schema: (connectionId: string, schema: string) => `schema:${connectionId}::${schema}`,
+  tables: (connectionId: string) => `tables:${connectionId}`,
+  databases: (connectionId: string) => `databases:${connectionId}`,
+};
+
+/**
+ * Drops every entry belonging to a connection that is gone.
+ *
+ * Works on both key shapes in the store: a plain connection id has no `::`, so
+ * the split returns it whole.
+ */
+const forgetting = <T,>(map: Record<string, T>, gone: Set<string>): Record<string, T> =>
+  Object.fromEntries(Object.entries(map).filter(([key]) => !gone.has(key.split("::")[0]!)));
+
+export const useApp = create<AppState>((set, get) => {
+  const patchTab = (id: string, p: Partial<QueryTab>) =>
+    set((s) => ({ tabs: s.tabs.map((t) => (t.id === id ? { ...t, ...p } : t)) }));
+
+  /**
+   * Runs `fn` with `key` on the record of what the app is waiting for.
+   *
+   * `finally`, so a call that throws still clears its own mark: a spinner left
+   * turning after a failed connection is a worse lie than no spinner at all.
+   */
+  const track = async <T,>(key: string, label: string, fn: () => Promise<T>): Promise<T> => {
+    set((s) => ({ busy: { ...s.busy, [key]: label } }));
+    try {
+      return await fn();
+    } finally {
+      set((s) => {
+        const busy = { ...s.busy };
+        delete busy[key];
+        return { busy };
+      });
+    }
+  };
+
+  /**
+   * Regenerates a table tab's SQL from its own paging state and runs it.
+   *
+   * Every pager control routes through here, so the statement on the tab and
+   * the rows on screen can never describe different pages.
+   */
+  const runTablePage = async (
+    id: string,
+    next: Partial<Pick<QueryTab, "page" | "sort" | "filters">>,
+  ) => {
+    const tab = get().tabs.find((t) => t.id === id);
+    const object = tab?.object;
+    if (!tab || !object || !hasRows(object)) return;
+    const page = next.page ?? tab.page;
+    const sort = next.sort !== undefined ? next.sort : tab.sort;
+    const filters = next.filters ?? tab.filters;
+    const sql = tablePageSql({
+      schema: object.schema,
+      table: object.name,
+      sort,
+      limit: page.limit,
+      offset: page.offset,
+      filters,
+      columns: tabColumns(tab),
+    });
+    patchTab(id, { page, sort, filters, sql });
+    await get().runQuery(id, sql);
+  };
+
+  /**
+   * Moves a tab to a page, whichever kind of tab it is.
+   *
+   * A table tab regenerates its statement from the paging state. A query tab
+   * keeps the SQL the user typed exactly as typed and lets `runQuery` decide
+   * whether it can be wrapped for paging — so the editor never rewrites itself
+   * under the caret.
+   */
+  const runPage = async (id: string, page: { limit: number; offset: number }) => {
+    const before = get().tabs.find((t) => t.id === id);
+    if (!before) return;
+
+    if (before.object) {
+      await runTablePage(id, { page });
+    } else {
+      patchTab(id, { page });
+      await get().runQuery(id);
+    }
+
+    // Landing on an empty page past the start means the row count was an exact
+    // multiple of the limit and Next was one click too generous. Step back
+    // rather than leave the user staring at nothing.
+    const after = get().tabs.find((t) => t.id === id);
+    if (after && after.page.offset > 0 && after.results[0]?.rows.length === 0) {
+      await runPage(id, {
+        ...after.page,
+        offset: Math.max(0, after.page.offset - after.page.limit),
+      });
+    }
+  };
+
+  return {
+  connections: [],
+  open: {},
+  activeConnectionId: null,
+  databases: {},
+  schemas: {},
+  tables: {},
+  functions: {},
+  expandedSchemas: {},
+  tabs: [],
+  activeTabId: null,
+  sidebarVisible: true,
+  palette: null,
+  sheet: { open: false, editing: null, credentialLost: false, sshSecretLost: false },
+  filterEditor: null,
+  rowPanel: false,
+  cellEdit: null,
+  cellView: null,
+  busy: {},
+  toast: null,
+
+  loadConnections: async () => {
+    try {
+      set({ connections: await ipc.listConnections() });
+    } catch (e) {
+      set({ toast: { kind: "error", text: asDbError(e).message } });
+    }
+  },
+
+  connect: (config, password, sshSecret) =>
+    track(busyKey.connect(config.id), `Connecting to ${config.name}…`, async () => {
+      try {
+        const info = await ipc.connect(config, password, sshSecret);
+        const schemas = await ipc.listSchemas(config.id);
+        set((s) => ({
+          open: { ...s.open, [config.id]: info },
+          schemas: { ...s.schemas, [config.id]: schemas },
+          activeConnectionId: config.id,
+          toast: null,
+        }));
+
+        // Pinned tabs belong to a connection, so they come back when it does —
+        // not at launch, when there is no session to run them against.
+        for (const p of loadPinnedTabs()) {
+          if (p.connectionId !== config.id) continue;
+          if (p.object) {
+            get().openObjectTab(config.id, p.object);
+          } else {
+            get().openTab(config.id);
+            // Restored, not re-run: opening the app should not fire off whatever
+            // statement was in the tab when it was last closed.
+            const id = get().activeTabId;
+            if (id) get().setTabSql(id, p.sql);
+          }
+          const id = get().activeTabId;
+          if (id) patchTab(id, { pinned: true });
+        }
+
+        // A freshly opened connection with no tab is a dead end. Give it one,
+        // and adopt any tab that has no connection yet.
+        const { tabs } = get();
+        const orphan = tabs.find((t) => t.connectionId === null);
+        if (orphan) {
+          set((s) => ({
+            tabs: s.tabs.map((t) => (t.id === orphan.id ? { ...t, connectionId: config.id } : t)),
+            activeTabId: orphan.id,
+          }));
+        } else if (!tabs.some((t) => t.connectionId === config.id)) {
+          get().openTab(config.id);
+        }
+
+        // A connection that named no database is a server: the schema it landed
+        // in belongs to whichever database Postgres substituted, and is not what
+        // the user asked for. List the databases instead.
+        if (isServerOnly(config)) {
+          void get().loadDatabases(config.id);
+          return;
+        }
+
+        // 'public' is where the user's tables almost always are.
+        if (schemas.some((s) => s.name === "public")) {
+          await get().toggleSchema(config.id, "public");
+        }
+      } catch (e) {
+        const error = asDbError(e);
+        // A missing secret is recoverable, but only by retyping it. Reopen the
+        // sheet on the connection that failed rather than leaving a toast the
+        // user can do nothing about, and on the field that is actually wrong:
+        // being asked for the database password when the key passphrase is what
+        // failed sends the user looking for the wrong secret.
+        if (!get().sheet.open) {
+          if (error.code === CREDENTIAL_UNREADABLE) {
+            set({
+              sheet: { open: true, editing: config, credentialLost: true, sshSecretLost: false },
+            });
+          } else if (error.code === SSH_SECRET_REQUIRED) {
+            set({
+              sheet: { open: true, editing: config, credentialLost: false, sshSecretLost: true },
+            });
+          }
+        }
+        set({ toast: { kind: "error", text: error.message } });
+        throw e;
+      }
+    }),
+
+  disconnect: async (id) => {
+    try {
+      await ipc.disconnect(id);
+    } catch (e) {
+      // The session is closing either way; saying why is all that is left.
+      set({ toast: { kind: "error", text: asDbError(e).message } });
+    }
+    set((s) => {
+      const open = { ...s.open };
+      delete open[id];
+      return {
+        open,
+        activeConnectionId: s.activeConnectionId === id ? null : s.activeConnectionId,
+      };
+    });
+  },
+
+  saveConnection: async (config, password, sshSecret) => {
+    set({ connections: await ipc.saveConnection(config, password, sshSecret) });
+  },
+
+  /**
+   * Deletes a connection and clears up after it.
+   *
+   * The backend takes the derived connections with it, so what is gone is
+   * whatever the returned list no longer contains, not just the id asked for.
+   * Everything keyed by one of those ids goes: leaving a session in `open`
+   * would keep the sidebar showing a live dot for a connection that is not
+   * there, and leaving its tabs would leave tabs whose next query cannot run.
+   */
+  deleteConnection: async (id) => {
+    const before = get().connections;
+    const connections = await ipc.deleteConnection(id);
+    const gone = new Set([id, ...before.filter((c) => !connections.some((n) => n.id === c.id)).map((c) => c.id)]);
+
+    set((s) => {
+      const tabs = s.tabs.filter((t) => !t.connectionId || !gone.has(t.connectionId));
+      return {
+        connections,
+        open: forgetting(s.open, gone),
+        databases: forgetting(s.databases, gone),
+        schemas: forgetting(s.schemas, gone),
+        tables: forgetting(s.tables, gone),
+        functions: forgetting(s.functions, gone),
+        expandedSchemas: forgetting(s.expandedSchemas, gone),
+        tabs,
+        activeTabId: tabs.some((t) => t.id === s.activeTabId)
+          ? s.activeTabId
+          : (tabs[tabs.length - 1]?.id ?? null),
+        activeConnectionId:
+          s.activeConnectionId && gone.has(s.activeConnectionId) ? null : s.activeConnectionId,
+      };
+    });
+  },
+
+  setActiveConnection: (id) => set({ activeConnectionId: id }),
+
+  /**
+   * Databases on this connection's server. Fetched once per connection: the
+   * list is a property of the server, and creating a database while the app is
+   * open is rare enough to cost a reconnect.
+   */
+  loadDatabases: async (connectionId) => {
+    if (get().databases[connectionId]) return;
+    await track(busyKey.databases(connectionId), "Reading databases…", async () => {
+      try {
+        const names = await ipc.listDatabases(connectionId);
+        set((s) => ({ databases: { ...s.databases, [connectionId]: names } }));
+      } catch (e) {
+        set({ toast: { kind: "error", text: asDbError(e).message } });
+      }
+    });
+  },
+
+  /**
+   * Opens a database on the server behind `fromConnectionId`.
+   *
+   * Switching database means a different session, so it means a different
+   * connection. Deriving one rather than mutating the existing config is what
+   * keeps both reachable: the tabs already open on the old database keep
+   * working, and the new database is somewhere the sidebar can point at.
+   *
+   * The derived connection carries `parentId`, so it authenticates with the
+   * server's credential instead of a copy of the secret per database, and it
+   * inherits `environment`, so a database picked off a production server is
+   * still tinted as production.
+   */
+  openDatabase: async (fromConnectionId, name) => {
+    const { connections } = get();
+    const parent = connections.find((c) => c.id === fromConnectionId);
+    if (!parent) return;
+
+    // The same database on the same server is the same connection. Without
+    // this, picking it twice leaves two entries that are indistinguishable.
+    const existing = connections.find(
+      (c) =>
+        c.driver === parent.driver &&
+        c.host === parent.host &&
+        c.port === parent.port &&
+        c.user === parent.user &&
+        c.sslMode === parent.sslMode &&
+        c.database === name,
+    );
+
+    const config: ConnectionConfig = existing ?? {
+      ...parent,
+      id: crypto.randomUUID(),
+      name,
+      database: name,
+      // Chained to the root, so a database picked from a derived connection
+      // still resolves its password in one hop.
+      parentId: parent.parentId ?? parent.id,
+    };
+
+    // Marked against the row that was clicked, not the connection this is
+    // about to derive: the row is what the user is looking at, and it has no
+    // id yet on the first click.
+    await track(
+      busyKey.database(fromConnectionId, name),
+      `Opening ${name}…`,
+      async () => {
+        try {
+          // No password argument: the secret stays where it is, under the parent.
+          if (!existing) await get().saveConnection(config);
+          if (get().open[config.id]) {
+            get().setActiveConnection(config.id);
+            return;
+          }
+          await get().connect(config);
+        } catch (e) {
+          set({ toast: { kind: "error", text: asDbError(e).message } });
+        }
+      },
+    );
+  },
+
+  toggleSchema: async (connectionId, schema) => {
+    const key = tableKey(connectionId, schema);
+    const expanded = get().expandedSchemas[key];
+    if (expanded) {
+      set((s) => ({ expandedSchemas: { ...s.expandedSchemas, [key]: false } }));
+      return;
+    }
+    await track(busyKey.schema(connectionId, schema), `Reading ${schema}…`, async () => {
+      try {
+        // Both lists in one round trip. A schema that has been expanded once
+        // never needs either call again.
+        const [tables, functions] = await Promise.all([
+          get().tables[key] ?? ipc.listTables(connectionId, schema),
+          get().functions[key] ?? ipc.listFunctions(connectionId, schema),
+        ]);
+        set((s) => ({
+          tables: { ...s.tables, [key]: tables },
+          functions: { ...s.functions, [key]: functions },
+          expandedSchemas: { ...s.expandedSchemas, [key]: true },
+        }));
+      } catch (e) {
+        set({ toast: { kind: "error", text: asDbError(e).message } });
+      }
+    });
+  },
+
+  /**
+   * Tables the sidebar has not expanded yet are invisible to the ⌘P picker,
+   * which would make it quietly incomplete. Schemas are already filtered to
+   * the user's own, so fetching the rest is a handful of catalogue queries.
+   */
+  loadAllTables: async (connectionId) => {
+    const { schemas, tables } = get();
+    const missing = (schemas[connectionId] ?? []).filter(
+      (s) => !tables[tableKey(connectionId, s.name)],
+    );
+    if (missing.length === 0) return;
+    await track(busyKey.tables(connectionId), "Reading tables…", async () => {
+      try {
+        const loaded = await Promise.all(
+          missing.map(async (s) => [tableKey(connectionId, s.name), await ipc.listTables(connectionId, s.name)] as const),
+        );
+        set((state) => ({ tables: { ...state.tables, ...Object.fromEntries(loaded) } }));
+      } catch (e) {
+        set({ toast: { kind: "error", text: asDbError(e).message } });
+      }
+    });
+  },
+
+  reloadSchema: async (connectionId, schema) => {
+    const key = tableKey(connectionId, schema);
+    try {
+      const [tables, functions] = await Promise.all([
+        ipc.listTables(connectionId, schema),
+        ipc.listFunctions(connectionId, schema),
+      ]);
+      set((s) => ({
+        tables: { ...s.tables, [key]: tables },
+        functions: { ...s.functions, [key]: functions },
+      }));
+    } catch (e) {
+      set({ toast: { kind: "error", text: asDbError(e).message } });
+    }
+  },
+
+  /**
+   * Runs the drop and clears up after it: the object list no longer contains
+   * the object, and any tab pointed at it is now pointed at nothing.
+   *
+   * The statement itself is built and shown to the user before this is called;
+   * nothing here decides what to destroy.
+   */
+  dropObject: async (connectionId, schema, name, kind) => {
+    await ipc.executeQuery(connectionId, dropStatement(schema, name, kind));
+    set((s) => {
+      const doomed = s.tabs.filter(
+        (t) => t.connectionId === connectionId && t.object?.schema === schema && t.object.name === name,
+      );
+      if (doomed.length === 0) return {};
+      const tabs = s.tabs.filter((t) => !doomed.includes(t));
+      const activeTabId = doomed.some((t) => t.id === s.activeTabId)
+        ? (tabs[tabs.length - 1]?.id ?? null)
+        : s.activeTabId;
+      return { tabs, activeTabId };
+    });
+    await get().reloadSchema(connectionId, schema);
+    set({ toast: { kind: "info", text: `Dropped ${schema}.${name}.` } });
+  },
+
+  truncateTable: async (connectionId, schema, name) => {
+    await ipc.executeQuery(connectionId, truncateStatement(schema, name));
+    // The table survives, so its tabs do too — they just need re-reading.
+    for (const tab of get().tabs) {
+      if (tab.connectionId === connectionId && tab.object?.schema === schema && tab.object.name === name) {
+        patchTab(tab.id, { rowCount: { value: 0, exact: true } });
+        void get().runQuery(tab.id);
+      }
+    }
+    set({ toast: { kind: "info", text: `Truncated ${schema}.${name}.` } });
+  },
+
+  openTab: (connectionId) => {
+    const tab = newTab(connectionId ?? get().activeConnectionId);
+    set((s) => ({ tabs: [...s.tabs, tab], activeTabId: tab.id }));
+  },
+
+  openObjectTab: (connectionId, object) => {
+    const existing = get().tabs.find(
+      (t) =>
+        t.connectionId === connectionId &&
+        t.object?.schema === object.schema &&
+        t.object?.name === object.name &&
+        t.object?.kind === object.kind,
+    );
+    // Reopening an object should return to the tab you already have rather
+    // than stacking a second copy of the same thing.
+    if (existing) {
+      set({ activeTabId: existing.id });
+      // A tab that already existed still needs its definition: without it
+      // `editableReason` says "reading" forever and every double click is a
+      // silent no-op.
+      void get().ensureColumns(existing.id);
+      return;
+    }
+    const tab = newTab(connectionId, object);
+    set((s) => ({ tabs: [...s.tabs, tab], activeTabId: tab.id }));
+
+    if (!hasRows(object)) {
+      void get().setTabView(tab.id, "definition");
+      return;
+    }
+    void get().runQuery(tab.id);
+
+    // Runs alongside the page rather than before it: the rows are what the
+    // user asked for, the count is only ever context for them.
+    void ipc
+      .estimateRows(connectionId, object.schema, object.name)
+      .then((rowCount) => patchTab(tab.id, { rowCount }))
+      .catch(() => {
+        /* A missing count is not worth a toast; the pager still works. */
+      });
+
+    // Likewise the columns. Editing needs the primary key and the types, and
+    // wanting them only once the user double-clicks would put a round trip
+    // between the gesture and the caret.
+    void get().ensureColumns(tab.id);
+  },
+
+  /**
+   * Loads the table definition if this tab does not have it yet.
+   *
+   * Idempotent and safe to call from anywhere, which is the point: a tab can
+   * reach the grid through more than one door (opened fresh, reopened, restored
+   * after a failed fetch), and a tab that quietly lacks its columns is a tab
+   * where every double click does nothing and says nothing.
+   */
+  ensureColumns: async (tabId) => {
+    const tab = get().tabs.find((t) => t.id === tabId);
+    const object = tab?.object;
+    if (!tab || !object || !tab.connectionId || tab.columns || !hasRows(object)) return;
+    try {
+      const columns = await ipc.listColumns(tab.connectionId, object.schema, object.name);
+      patchTab(tabId, { columns });
+    } catch {
+      /* The tab still reads. The next attempt to edit asks again. */
+    }
+  },
+
+  closeTab: (id) => {
+    set((s) => {
+      const index = s.tabs.findIndex((t) => t.id === id);
+      const tabs = s.tabs.filter((t) => t.id !== id);
+      if (s.activeTabId !== id) return { tabs };
+      // Focus the neighbour, preferring the one on the left, which is where
+      // the eye already is after closing.
+      const next = tabs[Math.max(0, index - 1)];
+      return { tabs, activeTabId: next?.id ?? null };
+    });
+    // Closing a pinned tab is how a pin is dropped: the next session should
+    // not reopen something the user just shut.
+    savePinnedTabs(get().tabs);
+  },
+
+  closeOtherTabs: (id) => {
+    set((s) => ({
+      // Pinned is a statement about which tabs survive a clear-out, so this is
+      // the one place it has to be honoured.
+      tabs: s.tabs.filter((t) => t.id === id || t.pinned),
+      activeTabId: id,
+    }));
+  },
+
+  togglePinTab: (id) => {
+    set((s) => ({ tabs: s.tabs.map((t) => (t.id === id ? { ...t, pinned: !t.pinned } : t)) }));
+    savePinnedTabs(get().tabs);
+  },
+
+  setActiveTab: (id) => set({ activeTabId: id }),
+
+  cycleTab: (delta) => {
+    const { tabs, activeTabId } = get();
+    if (tabs.length === 0) return;
+    const i = tabs.findIndex((t) => t.id === activeTabId);
+    const next = tabs[(((i + delta) % tabs.length) + tabs.length) % tabs.length];
+    if (next) set({ activeTabId: next.id });
+  },
+
+  // Editing the statement invalidates where you were in its results: page 3 of
+  // a query you have since changed is not a page of anything.
+  setTabSql: (id, sql) =>
+    set((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.id !== id
+          ? t
+          : { ...t, sql, page: t.page.offset === 0 ? t.page : { ...t.page, offset: 0 } },
+      ),
+    })),
+
+  setActiveResult: (tabId, index) =>
+    set((s) => ({
+      tabs: s.tabs.map((t) => (t.id === tabId ? { ...t, activeResultIndex: index } : t)),
+    })),
+
+  runQuery: async (tabId, sqlOverride) => {
+    const tab = get().tabs.find((t) => t.id === tabId);
+    if (!tab) return;
+    if (!tab.connectionId) {
+      set({ toast: { kind: "error", text: "No connection selected for this tab." } });
+      return;
+    }
+    const sql = (sqlOverride ?? tab.sql).trim();
+    if (!sql) return;
+
+    const patch = (p: Partial<QueryTab>) => patchTab(tabId, p);
+    const { limit, offset } = tab.page;
+
+    // A table tab's SQL is generated and already carries its own limit and
+    // offset. Only what the user typed is a candidate for wrapping, and only
+    // when `unpageableReason` says every one of its checks passed.
+    const note = tab.object ? "the rows come from a table tab" : unpageableReason(sql);
+    const paged = note === null;
+    // What actually runs. Unwrapped, this is the user's statement verbatim;
+    // the cap below is what keeps an unwrappable one from arriving whole.
+    const sent = paged ? pagedSql(sql, limit, offset) : sql;
+
+    patch({ running: true, error: null, clientMs: null, paged, pageNote: note });
+    const started = performance.now();
+    try {
+      const results = await ipc.executeQuery(tab.connectionId, sent, limit);
+      patch({
+        results,
+        activeResultIndex: Math.max(0, results.length - 1),
+        running: false,
+        clientMs: Math.round(performance.now() - started),
+      });
+    } catch (e) {
+      patch({ running: false, error: asDbError(e), clientMs: Math.round(performance.now() - started) });
+    }
+  },
+
+  cancelQuery: async (tabId) => {
+    const tab = get().tabs.find((t) => t.id === tabId);
+    if (!tab?.connectionId || !tab.running) return;
+    try {
+      await ipc.cancelQuery(tab.connectionId);
+    } catch (e) {
+      set({ toast: { kind: "error", text: asDbError(e).message } });
+    }
+  },
+
+  // Back to page one: keeping the offset would land the user somewhere they
+  // did not choose, at a row number that no longer means the same thing.
+  setPageLimit: (tabId, limit) => {
+    void runPage(tabId, { limit: Math.max(1, Math.trunc(limit)), offset: 0 });
+  },
+
+  goPage: (tabId, delta) => {
+    const tab = get().tabs.find((t) => t.id === tabId);
+    if (!tab) return;
+    const offset = Math.max(0, tab.page.offset + delta * tab.page.limit);
+    if (offset === tab.page.offset) return;
+    void runPage(tabId, { ...tab.page, offset });
+  },
+
+  toggleSort: (tabId, column) => {
+    const tab = get().tabs.find((t) => t.id === tabId);
+    if (!hasRows(tab?.object ?? null) || !tab) return;
+    // Third click clears rather than cycling back to ascending: "no sort" is a
+    // state the user can otherwise only reach by reopening the table.
+    const sort: Sort | null =
+      tab.sort?.column !== column
+        ? { column, dir: "asc" }
+        : tab.sort.dir === "asc"
+          ? { column, dir: "desc" }
+          : null;
+    void runTablePage(tabId, { sort, page: { ...tab.page, offset: 0 } });
+  },
+
+  /**
+   * Back to page one, for the same reason changing the page size is: row 400 of
+   * a filtered set is not row 400 of the table.
+   */
+  setFilters: (tabId, filters) => {
+    const tab = get().tabs.find((t) => t.id === tabId);
+    const object = tab?.object;
+    if (!tab || !object) return;
+
+    // The estimate came from the planner's statistics for the whole table, so
+    // it stops describing anything the moment a filter is on. Dropping it is
+    // honest; the footer offers an exact count in its place.
+    patchTab(tabId, { rowCount: null });
+    void runTablePage(tabId, { filters, page: { ...tab.page, offset: 0 } });
+
+    // Last filter removed: the cheap estimate means something again.
+    if (filters.length === 0 && tab.connectionId) {
+      void ipc
+        .estimateRows(tab.connectionId, object.schema, object.name)
+        .then((rowCount) => patchTab(tabId, { rowCount }))
+        .catch(() => {
+          /* A missing count is not worth a toast; the pager still works. */
+        });
+    }
+  },
+
+  setFilterEditor: (filterEditor) => set({ filterEditor }),
+
+  countExactRows: async (tabId) => {
+    const tab = get().tabs.find((t) => t.id === tabId);
+    const object = tab?.object;
+    if (!tab || !object || !tab.connectionId || tab.rowCount?.exact) return;
+    try {
+      // `count_rows` counts the table. Under a filter the only honest answer
+      // comes from counting the same rows the page selected.
+      const rowCount =
+        tab.filters.length === 0
+          ? await ipc.countRows(tab.connectionId, object.schema, object.name)
+          : await ipc
+              .executeQuery(
+                tab.connectionId,
+                tableCountSql({
+                  schema: object.schema,
+                  table: object.name,
+                  filters: tab.filters,
+                  columns: tabColumns(tab),
+                }),
+              )
+              .then((results) => ({
+                value: Number(results[0]?.rows[0]?.[0] ?? 0),
+                exact: true,
+              }));
+      patchTab(tabId, { rowCount });
+    } catch (e) {
+      set({ toast: { kind: "error", text: asDbError(e).message } });
+    }
+  },
+
+  setTabView: async (tabId, view) => {
+    const tab = get().tabs.find((t) => t.id === tabId);
+    if (!tab) return;
+    patchTab(tabId, { view });
+
+    const { connectionId, object } = tab;
+    if (!object || !connectionId) return;
+
+    const fail = (e: unknown) => set({ toast: { kind: "error", text: asDbError(e).message } });
+
+    // Each view fetches what it needs the first time it is looked at, and
+    // never again for the life of the tab. Columns are usually already here:
+    // opening a table tab fetches them for the editor.
+    if (view === "structure" && !tab.indexes) {
+      try {
+        const [columns, indexes] = await Promise.all([
+          tab.columns ?? ipc.listColumns(connectionId, object.schema, object.name),
+          ipc.listIndexes(connectionId, object.schema, object.name),
+        ]);
+        patchTab(tabId, { columns, indexes });
+      } catch (e) {
+        fail(e);
+      }
+    }
+
+    if (view === "definition" && tab.definition === null) {
+      try {
+        const definition =
+          object.kind === "function"
+            ? await ipc.functionDefinition(connectionId, object.oid ?? 0)
+            : await ipc.viewDefinition(connectionId, object.schema, object.name);
+        patchTab(tabId, { definition });
+      } catch (e) {
+        fail(e);
+      }
+    }
+  },
+
+  /** Moves the caret without opening anything: arrow keys, and clearing on a new page. */
+  setSelection: (tabId, selection) => patchTab(tabId, { selection }),
+
+  // A click on a cell both selects it and shows the row, which is what makes
+  // the panel a reading surface rather than one more thing to open. Arrow keys
+  // deliberately do not: navigating a grid is not a request for a panel.
+  selectCell: (tabId, row, col) => {
+    patchTab(tabId, { selection: { row, col } });
+    if (!get().rowPanel) set({ rowPanel: true });
+  },
+
+  toggleRowPanel: () => set((s) => ({ rowPanel: !s.rowPanel })),
+  closeRowPanel: () => set({ rowPanel: false }),
+
+  beginEdit: (tabId, row, col, where = "grid") => {
+    const tab = get().tabs.find((t) => t.id === tabId);
+    if (!tab) return;
+    const value = tab.results[tab.activeResultIndex]?.rows[row]?.[col];
+    if (value === undefined) return;
+
+    const reason = editableReason(tab);
+    if (reason !== null) {
+      // Refusing in silence is the worst version of this: the user double
+      // clicks, nothing happens, and there is nothing on screen that says why.
+      set({ toast: { kind: "error", text: reason } });
+      // The commonest reason is simply that the definition has not arrived, and
+      // asking for it now means the next attempt works.
+      if (!tab.columns) void get().ensureColumns(tabId);
+      return;
+    }
+    set({ cellEdit: { tabId, row, col, draft: value ?? "", isNull: value === null, where } });
+    // Editing a cell that is not selected would leave the panel describing a
+    // different row than the one under the caret.
+    patchTab(tabId, { selection: { row, col } });
+  },
+
+  setEditDraft: (draft) =>
+    set((s) => (s.cellEdit ? { cellEdit: { ...s.cellEdit, draft, isNull: false } } : {})),
+
+  setEditNull: (isNull) => set((s) => (s.cellEdit ? { cellEdit: { ...s.cellEdit, isNull } } : {})),
+
+  cancelEdit: () => set({ cellEdit: null }),
+
+  /**
+   * Writes the open edit.
+   *
+   * The row is identified by the table's own primary key, read out of the row
+   * already on screen. The backend checks that identity against the catalogue
+   * and refuses anything else, so this is a request to write, not an
+   * instruction about how to find the row.
+   */
+  commitEdit: async () => {
+    const edit = get().cellEdit;
+    if (!edit) return;
+    const tab = get().tabs.find((t) => t.id === edit.tabId);
+    const object = tab?.object;
+    if (!tab || !object || !tab.connectionId) return;
+
+    const result = tab.results[tab.activeResultIndex];
+    const column = result?.columns[edit.col]?.name;
+    if (!result || !column) return;
+
+    // The same rule the status bar previewed with, so what runs is what was
+    // shown. A key that is not in the result, or is NULL, cannot identify
+    // anything: better to say so than to send a `where` that matches the
+    // wrong row.
+    const identity = rowKeysFor(tab.columns, result, edit.row);
+    if (!identity.ok) {
+      set({
+        toast: {
+          kind: "error",
+          text: identity.missing
+            ? `Cannot identify this row: ${identity.missing} is not in the result.`
+            : "Cannot identify this row: the table has no primary key.",
+        },
+        cellEdit: null,
+      });
+      return;
+    }
+    const keys = identity.keys;
+
+    const value = edit.isNull ? null : edit.draft;
+    set({ cellEdit: null });
+
+    try {
+      const stored = await ipc.updateCell(
+        tab.connectionId,
+        object.schema,
+        object.name,
+        column,
+        value,
+        keys,
+      );
+      // What Postgres kept, not what was typed: a numeric is rounded to its
+      // scale and a timestamptz is normalised, and showing the typed text would
+      // leave the grid quietly disagreeing with the table.
+      set((s) => ({
+        tabs: s.tabs.map((t) =>
+          t.id !== edit.tabId
+            ? t
+            : {
+                ...t,
+                results: t.results.map((r, i) =>
+                  i !== t.activeResultIndex
+                    ? r
+                    : {
+                        ...r,
+                        rows: r.rows.map((existing, ri) =>
+                          ri !== edit.row
+                            ? existing
+                            : existing.map((v, ci) => (ci === edit.col ? stored : v)),
+                        ),
+                      },
+                ),
+              },
+        ),
+      }));
+    } catch (e) {
+      set({ toast: { kind: "error", text: asDbError(e).message } });
+    }
+  },
+
+  openCellView: (tabId, row, col) => {
+    // Selecting too, so the grid, the row panel and the expanded editor never
+    // describe three different cells.
+    set({ cellView: { tabId, row, col } });
+    patchTab(tabId, { selection: { row, col } });
+  },
+
+  closeCellView: () => set({ cellView: null }),
+
+  /**
+   * Writes what the expanded editor is holding.
+   *
+   * Composed out of the normal edit rather than given a write of its own: the
+   * primary key check, the status bar preview and the error handling all live
+   * in `commitEdit`, and a second path to `update_cell` would be a second place
+   * for them to be wrong. `beginEdit` refuses and says why when the tab cannot
+   * be written to, which is exactly the answer this needs.
+   */
+  commitCellView: async (text) => {
+    const view = get().cellView;
+    if (!view) return;
+    get().beginEdit(view.tabId, view.row, view.col, "panel");
+    if (!get().cellEdit) return;
+    if (text === null) get().setEditNull(true);
+    else get().setEditDraft(text);
+    set({ cellView: null });
+    await get().commitEdit();
+  },
+
+  toggleSidebar: () => set((s) => ({ sidebarVisible: !s.sidebarVisible })),
+  setPalette: (mode) => set({ palette: mode }),
+  // Both "lost" flags are cleared here rather than accepted as arguments: the
+  // only thing that can know a secret is unreadable is the connect attempt
+  // that hit it, and it sets the sheet itself.
+  setSheet: (open, editing = null, credentialLost = false) =>
+    set({ sheet: { open, editing, credentialLost, sshSecretLost: false } }),
+  setToast: (toast) => set({ toast }),
+  };
+});
+
+export const activeTab = (s: AppState) => s.tabs.find((t) => t.id === s.activeTabId) ?? null;

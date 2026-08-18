@@ -1,0 +1,108 @@
+/**
+ * The IPC surface, and nothing else.
+ *
+ * One wrapper per backend command, so the command names and argument shapes
+ * live in one file rather than being spelled out at each call site. The types
+ * these return are in `@/lib/types`; the helpers that work on them are in
+ * `@/lib/utils`.
+ */
+
+import { invoke } from "@tauri-apps/api/core";
+import type {
+  ColumnInfo,
+  ConnectionConfig,
+  ConnectionInfo,
+  FunctionEntry,
+  IndexInfo,
+  QueryResult,
+  RowCount,
+  RowKey,
+  SchemaEntry,
+  TableEntry,
+} from "@/lib/types";
+
+export const ipc = {
+  listConnections: () => invoke<ConnectionConfig[]>("list_connections"),
+
+  /**
+   * `undefined` for either secret means "leave the stored one alone"; the
+   * empty string means "forget it". Neither ever comes back out.
+   */
+  saveConnection: (config: ConnectionConfig, password?: string, sshSecret?: string) =>
+    invoke<ConnectionConfig[]>("save_connection", {
+      config,
+      password: password ?? null,
+      sshSecret: sshSecret ?? null,
+    }),
+
+  deleteConnection: (id: string) => invoke<ConnectionConfig[]>("delete_connection", { id }),
+
+  /**
+   * Both secrets are resolved from the keystore backend-side. They are only
+   * passed here when testing credentials that have not been saved yet.
+   */
+  connect: (config: ConnectionConfig, password?: string, sshSecret?: string) =>
+    invoke<ConnectionInfo>("connect", {
+      config,
+      password: password ?? null,
+      sshSecret: sshSecret ?? null,
+    }),
+
+  disconnect: (id: string) => invoke<void>("disconnect", { id }),
+
+  openConnectionIds: () => invoke<string[]>("open_connection_ids"),
+
+  /**
+   * Runs `sql` as given. `maxRows` caps what comes back to the window, not what
+   * the server runs: a capped result says `truncated` and still reports the
+   * statement's real row count in `rowsAffected`.
+   */
+  executeQuery: (id: string, sql: string, maxRows?: number) =>
+    invoke<QueryResult[]>("execute_query", { id, sql, maxRows: maxRows ?? null }),
+
+  cancelQuery: (id: string) => invoke<void>("cancel_query", { id }),
+
+  /**
+   * Writes one cell and returns what Postgres stored.
+   *
+   * `value: null` is SQL NULL, not the empty string. `keys` must name the
+   * table's primary key; the backend rejects anything else rather than trust a
+   * `where` clause composed here.
+   */
+  updateCell: (
+    id: string,
+    schema: string,
+    table: string,
+    column: string,
+    value: string | null,
+    keys: RowKey[],
+  ) => invoke<string | null>("update_cell", { id, schema, table, column, value, keys }),
+
+  /** Databases on this session's server the connected role can actually open. */
+  listDatabases: (id: string) => invoke<string[]>("list_databases", { id }),
+
+  listSchemas: (id: string) => invoke<SchemaEntry[]>("list_schemas", { id }),
+
+  listTables: (id: string, schema: string) => invoke<TableEntry[]>("list_tables", { id, schema }),
+
+  estimateRows: (id: string, schema: string, table: string) =>
+    invoke<RowCount>("estimate_rows", { id, schema, table }),
+
+  countRows: (id: string, schema: string, table: string) =>
+    invoke<RowCount>("count_rows", { id, schema, table }),
+
+  listColumns: (id: string, schema: string, table: string) =>
+    invoke<ColumnInfo[]>("list_columns", { id, schema, table }),
+
+  listIndexes: (id: string, schema: string, table: string) =>
+    invoke<IndexInfo[]>("list_indexes", { id, schema, table }),
+
+  listFunctions: (id: string, schema: string) =>
+    invoke<FunctionEntry[]>("list_functions", { id, schema }),
+
+  functionDefinition: (id: string, oid: number) =>
+    invoke<string>("function_definition", { id, oid }),
+
+  viewDefinition: (id: string, schema: string, name: string) =>
+    invoke<string>("view_definition", { id, schema, name }),
+};

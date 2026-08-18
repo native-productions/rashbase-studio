@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" fill="none">
+  <title>Rashbase Studio</title>
+  <!--
+    App icon: the mark on a filled rounded-square ground, per macOS convention.
+    The in-app mark (logo.svg) has no ground.
+    Mark geometry is logo.svg scaled 24 -> 1024 at 0.62 and centred.
+  -->
+  <defs>
+    <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3A382F" />
+      <stop offset="1" stop-color="#26251F" />
+    </linearGradient>
+  </defs>
+
+  <rect width="1024" height="1024" rx="228" fill="url(#ground)" />
+  <rect x="4" y="4" width="1016" height="1016" rx="226" stroke="#4A4739" stroke-width="8" />
+
+  <g transform="translate(194 194) scale(26.5)">
+    <rect x="3" y="3" width="8" height="8" rx="1" fill="#F0B429" />
+    <rect x="13" y="3" width="8" height="8" rx="1" stroke="#F0B429" stroke-width="1.5" opacity="0.45" />
+    <rect x="3" y="13" width="8" height="8" rx="1" stroke="#F0B429" stroke-width="1.5" opacity="0.45" />
+    <path d="M13.8 13h6.4a.8.8 0 0 1 .8.8v2.7L16.5 21h-2.7a.8.8 0 0 1-.8-.8v-6.4a.8.8 0 0 1 .8-.8Z"
+          stroke="#F0B429" stroke-width="1.5" opacity="0.45" stroke-linejoin="round" />
+  </g>
+</svg>

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 32" width="200" height="32" fill="none">
+  <title>Rashbase Studio</title>
+
+  <g transform="translate(0 4)">
+    <rect x="3" y="3" width="8" height="8" rx="1" fill="#F0B429" />
+    <rect x="13" y="3" width="8" height="8" rx="1" stroke="#F0B429" stroke-width="1.5" opacity="0.45" />
+    <rect x="3" y="13" width="8" height="8" rx="1" stroke="#F0B429" stroke-width="1.5" opacity="0.45" />
+    <path d="M13.8 13h6.4a.8.8 0 0 1 .8.8v2.7L16.5 21h-2.7a.8.8 0 0 1-.8-.8v-6.4a.8.8 0 0 1 .8-.8Z"
+          stroke="#F0B429" stroke-width="1.5" opacity="0.45" stroke-linejoin="round" />
+  </g>
+
+  <text x="34" y="21"
+        font-family="'Instrument Sans Variable', 'Instrument Sans', system-ui, sans-serif"
+        font-size="15" font-weight="600" letter-spacing="-0.2" fill="#EAE7DF">RASHBASE</text>
+  <text x="129" y="21"
+        font-family="'Instrument Sans Variable', 'Instrument Sans', system-ui, sans-serif"
+        font-size="15" font-weight="400" letter-spacing="-0.2" fill="#A7A296">studio</text>
+</svg>

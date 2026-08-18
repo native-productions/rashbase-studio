@@ -1,0 +1,255 @@
+@import "tailwindcss";
+
+/* Self-hosted. No CDN, no network fetch, works offline. */
+@import "@fontsource-variable/instrument-sans";
+@import "@fontsource/geist-mono/400.css";
+@import "@fontsource/geist-mono/500.css";
+
+/*
+  Rashbase Studio design tokens.
+
+  Scene that decides the palette: 11pm, warm desk lamp, 14-inch laptop, forty
+  minutes staring at a result set hunting for a NULL in column 7. That forces
+  dark-but-not-black (high contrast at moderate ambient light is fatiguing),
+  warm rather than blue-black, and low chroma on every surface so the *data*
+  is the brightest thing on screen.
+
+  Colour strategy: Restrained. Tinted neutrals plus one accent under 10% of
+  surface area. The yellow appears on active tab, focus ring, selected cell,
+  primary button, and SQL keywords. Nowhere else.
+
+  Every neutral is tinted toward hue 90 at chroma 0.008. No pure grey anywhere,
+  no #000, no #fff.
+*/
+@theme {
+  /* Ground */
+  --color-base: oklch(0.19 0.008 90);
+  --color-raised: oklch(0.23 0.008 90);
+  --color-overlay: oklch(0.27 0.009 90);
+  --color-row-alt: oklch(0.21 0.008 90);
+  --color-hover: oklch(0.25 0.009 90);
+
+  /* Dialogs. Darker than the app behind them, and darker than the scrim over
+     it, so the sheet reads as a hole punched to a lower level and the filled
+     fields inside it become the brightest thing in the frame. That is the
+     order the eye wants here: a sheet is where something is typed, not read.
+     Fields carry no border: on a dark ground a filled field says "type here"
+     more plainly than an outlined one, and one less line per row is what lets
+     the rows sit close together without looking caged. */
+  --color-sheet: oklch(0.16 0.008 90);
+  --color-field: oklch(0.35 0.008 90);
+  --color-field-hover: oklch(0.38 0.008 90);
+
+  /* Lines */
+  --color-line: oklch(0.32 0.008 90);
+  --color-line-soft: oklch(0.26 0.008 90);
+
+  /* Ink */
+  --color-ink: oklch(0.93 0.006 90);
+  --color-ink-muted: oklch(0.7 0.006 90);
+  --color-ink-faint: oklch(0.55 0.006 90);
+
+  /* Accent — kept under 10% of surface */
+  --color-accent: oklch(0.82 0.17 88);
+  --color-accent-dim: oklch(0.62 0.13 88);
+  --color-accent-wash: oklch(0.3 0.04 88);
+  /* Selected text. The accent at low alpha rather than a wash: a wash sits
+     within a few points of lightness of every surface here, so a selection
+     drawn in it was invisible on the surface it covered. Alpha, so the text
+     underneath keeps its own colour. */
+  --color-selection: oklch(0.82 0.17 88 / 0.35);
+  --color-selection-soft: oklch(0.82 0.17 88 / 0.16);
+
+  /* Semantic. Deliberately lower chroma than the accent so a column of
+     numbers never competes with the one thing that means "focus". */
+  --color-num: oklch(0.78 0.09 200);
+  --color-str: oklch(0.8 0.08 145);
+  --color-bool: oklch(0.78 0.09 300);
+  --color-null: oklch(0.5 0.02 90);
+  --color-danger: oklch(0.65 0.16 25);
+  --color-warn: oklch(0.76 0.12 65);
+
+  --font-sans: "Instrument Sans Variable", "Instrument Sans", system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --ease-out-quart: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out-quart: cubic-bezier(0.77, 0, 0.175, 1);
+
+  /* macOS reserves this much of the titlebar for the traffic lights. */
+  --spacing-traffic: 78px;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    overflow: hidden;
+  }
+
+  body {
+    background: var(--color-base);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    /* A database client is not a document. Text selection is opt-in per
+       surface (cells, editor), never a stray drag across the chrome. */
+    user-select: none;
+    cursor: default;
+  }
+
+  ::selection {
+    background: var(--color-selection);
+    color: var(--color-ink);
+  }
+
+  /* One visible focus treatment everywhere, driven by the accent. */
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+    border-radius: 2px;
+  }
+
+  input,
+  textarea {
+    user-select: text;
+  }
+
+  /* A port is typed, never stepped. The spinner is two more pixels of chrome in
+     a field 64px wide, and it appears on hover, which makes the row twitch. */
+  input[type="number"] {
+    appearance: textfield;
+  }
+  input[type="number"]::-webkit-inner-spin-button,
+  input[type="number"]::-webkit-outer-spin-button {
+    appearance: none;
+    margin: 0;
+  }
+
+  /* Thin, always-visible scrollbars: overlay scrollbars hide the fact that a
+     result set continues, which matters more here than the extra 8px. */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: oklch(0.35 0.008 90);
+    border: 3px solid transparent;
+    background-clip: content-box;
+    border-radius: 5px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: oklch(0.45 0.008 90);
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}
+
+@layer components {
+  /* Section labels in the sidebar. */
+  .label-eyebrow {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--color-ink-faint);
+  }
+
+  /* A block of form fields that appeared because a switch was turned on.
+     Opacity only, like the sheet it sits in: the fields also push the form
+     taller, and a transform on top of that reads as two things moving. */
+  .reveal-anim {
+    animation: fade-in 140ms var(--ease-out-quart);
+  }
+
+  /* Dropdown menus. Short enough to feel instant, long enough to show which
+     direction the menu opened from. */
+  .menu-anim {
+    animation: fade-in 90ms var(--ease-out-quart);
+  }
+
+  /* The loading indicator. Linear, because a spinner that eases is a spinner
+     that looks like it is stalling, and fast, because the speed of the thing
+     turning is what a wait is judged by. */
+  .spin {
+    animation: spin 620ms linear infinite;
+  }
+
+  /* Pressable surfaces confirm they heard the click. */
+  .pressable {
+    transition: transform 120ms var(--ease-out-quart);
+  }
+  .pressable:active {
+    transform: scale(0.97);
+  }
+}
+
+/*
+  Sheet motion: opacity only.
+
+  Nothing here may animate `transform`. Tailwind's translate utilities compile
+  to the standalone `translate` property, which composes with `transform`
+  rather than replacing it, so a keyframe that moves the sheet gets applied on
+  top of the centring translate and the sheet jumps half a viewport away for
+  the length of the animation, then snaps back when the animation ends.
+
+  A fade is also the right call on its own terms: the sheet is already centred
+  under the user's eye, so movement adds nothing to read.
+*/
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes breathe {
+  50% { opacity: 0.3; }
+}
+
+.overlay-anim[data-state="open"],
+.sheet-anim[data-state="open"] {
+  animation: fade-in 160ms var(--ease-out-quart);
+}
+/* Exit is faster than entry: the system responding should never make the user
+   wait for a decision they already made. The overlay fades out with the sheet
+   rather than vanishing under it. */
+.overlay-anim[data-state="closed"],
+.sheet-anim[data-state="closed"] {
+  animation: fade-out 110ms var(--ease-out-quart);
+}
+
+/*
+  Reduced motion means fewer and gentler, not zero: opacity still carries
+  meaning (something appeared), movement is what causes sickness.
+*/
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-property: opacity !important;
+    transition-duration: 120ms !important;
+  }
+
+  /* The one exception, and it is the rule's own logic: a frozen spinner is not
+     a gentler spinner, it is a broken one. The rotation goes, because rotation
+     is the part that causes sickness; something still has to say the app is
+     waiting, so the opacity carries it instead. */
+  .spin {
+    animation: breathe 1400ms ease-in-out infinite !important;
+  }
+}

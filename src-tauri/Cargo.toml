@@ -1,0 +1,54 @@
+[package]
+name = "rashbase-studio"
+version = "0.1.0"
+description = "Free, AI-native database client"
+authors = ["Native Productions"]
+edition = "2021"
+
+[lib]
+# The `_lib` suffix keeps the lib name distinct from the bin name on Windows.
+# See https://github.com/rust-lang/cargo/issues/8519
+name = "rashbase_studio_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Database
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls-ring",
+    "postgres",
+] }
+tokio = { version = "1", features = ["sync", "time", "net", "io-util", "rt-multi-thread"] }
+futures = "0.3"
+# `Arc<dyn Session>` needs object-safe async methods, which native `async fn`
+# in traits still does not give.
+async-trait = "0.1"
+
+# Credentials: macOS Keychain / Windows Credential Manager / Linux Secret Service
+keyring = { version = "3", features = [
+    "apple-native",
+    "windows-native",
+    "sync-secret-service",
+] }
+
+thiserror = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+russh = { version = "0.62.6", default-features = false, features = ["ring", "rsa", "flate2"] }
+tauri-plugin-dialog = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
