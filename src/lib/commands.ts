@@ -1,5 +1,5 @@
 import { selectedSql } from "@/lib/activeEditor";
-import { hasRows } from "@/lib/utils/tabs";
+import { hasRows, isKeyspace } from "@/lib/utils/tabs";
 import { useApp, activeTab } from "@/store/app";
 
 /**
@@ -33,6 +33,40 @@ export const COMMANDS: Command[] = [
       // A selection means "run just this", which is how you test one statement
       // inside a long script without deleting the rest.
       if (tab) void s().runQuery(tab.id, selectedSql() ?? undefined);
+    },
+  },
+  // Ahead of `query.cancel`, and both bound to Escape. The keyboard layer takes
+  // the first *enabled* command that matches, so the order here is the priority:
+  // staged deletions are the more urgent thing to be able to call off, and a tab
+  // can only ever be in one of the two states anyway.
+  {
+    id: "keys.clearStaged",
+    label: "Clear staged deletions",
+    group: "Query",
+    keys: "Esc",
+    enabled: () => {
+      const tab = activeTab(s());
+      return !!tab && isKeyspace(tab.object) && tab.staged.length > 0;
+    },
+    run: () => {
+      const tab = activeTab(s());
+      if (tab) s().clearStaged(tab.id);
+    },
+  },
+  {
+    id: "keys.commitStaged",
+    label: "Delete staged keys",
+    group: "Query",
+    keys: "⌘S",
+    // The rows are already red and the status bar already prints the command,
+    // so this is the confirmation rather than the request for one.
+    enabled: () => {
+      const tab = activeTab(s());
+      return !!tab && isKeyspace(tab.object) && tab.staged.length > 0;
+    },
+    run: () => {
+      const tab = activeTab(s());
+      if (tab) void s().commitStaged(tab.id);
     },
   },
   {

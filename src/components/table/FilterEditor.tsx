@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { Select } from "@/components/ui/Select";
 import { useAnchoredPanel } from "@/components/ui/menu";
-import { FILTER_OPS, OP_ARITY, OP_LABEL } from "@/lib/constants/filters";
+import { FILTER_OPS, KEY_FILTER_OPS, OP_ARITY, OP_LABEL } from "@/lib/constants/filters";
 import { INPUT_COMPACT_CLS } from "@/lib/constants/ui";
 import { filterReady } from "@/lib/utils/filters";
 import type { ColumnMeta, Filter, FilterOp } from "@/lib/types";
@@ -21,6 +21,7 @@ const ANY = "";
 
 export function FilterEditor({
   columns,
+  keyspace = false,
   filter,
   anchorRef,
   onCommit,
@@ -28,6 +29,14 @@ export function FilterEditor({
   onClose,
 }: {
   columns: ColumnMeta[];
+  /**
+   * Whether this is filtering a flat key namespace rather than a relation.
+   *
+   * Changes the operator list and drops "any column": a keyspace has two things
+   * to filter on and they cost very differently, so ORing a condition across
+   * both would be a search whose price the user cannot see.
+   */
+  keyspace?: boolean;
   /** The filter being edited, or a fresh one from `newFilter`. */
   filter: Filter;
   /** Wrapper holding both the trigger and this panel: dismissal and placement. */
@@ -96,10 +105,10 @@ export function FilterEditor({
     >
       <div className="flex flex-col gap-1.5">
         <Select
-          value={draft.column ?? ANY}
+          value={draft.column ?? (keyspace ? "key" : ANY)}
           onChange={(v) => setDraft((d) => ({ ...d, column: v === ANY ? null : v }))}
           options={[
-            { value: ANY, label: "Any column" },
+            ...(keyspace ? [] : [{ value: ANY, label: "Any column" }]),
             ...columns.map((c) => ({ value: c.name, label: `${c.name} · ${c.typeName}` })),
           ]}
         />
@@ -118,7 +127,10 @@ export function FilterEditor({
                   return { ...d, op, values };
                 })
               }
-              options={FILTER_OPS.map((op) => ({ value: op, label: OP_LABEL[op] }))}
+              options={(keyspace ? KEY_FILTER_OPS : FILTER_OPS).map((op) => ({
+                value: op,
+                label: OP_LABEL[op],
+              }))}
             />
           </div>
 
@@ -136,7 +148,11 @@ export function FilterEditor({
                     ? "a, b, c"
                     : draft.op === "like" || draft.op === "ilike"
                       ? "pattern with %"
-                      : "value"
+                      : draft.op === "matches"
+                        ? "nvp:na:*"
+                        : draft.op === "prefix"
+                          ? "nvp:na:"
+                          : "value"
                 }
                 className={INPUT_COMPACT_CLS}
               />

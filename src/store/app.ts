@@ -12,7 +12,16 @@ import { asDbError } from "@/lib/utils/errors";
 import { loadPinnedTabs, savePinnedTabs } from "@/lib/pinnedTabs";
 import { applyTranslucency, loadTranslucency, saveTranslucency } from "@/lib/translucency";
 import { isServerOnly } from "@/lib/utils/connections";
-import { editableReason, hasRows, tabColumns } from "@/lib/utils/tabs";
+import { isKeyspaceDriver } from "@/lib/constants/connection";
+import {
+  formatTtl,
+  keyFilterFrom,
+  keyPageToResult,
+  keyRowIdentity,
+  parseTtl,
+  stagedKeysIn,
+} from "@/lib/utils/redis";
+import { cellEditableReason, hasRows, isKeyspace, tabColumns } from "@/lib/utils/tabs";
 import { rowKeysFor } from "@/lib/utils/rowKeys";
 import { rangeBetween, toggle as toggleKey } from "@/lib/utils/selection";
 import { pagedSql, unpageableReason } from "@/lib/utils/statement";
@@ -42,6 +51,9 @@ function newTab(connectionId: string | null, object: DbObject | null = null): Qu
     // so they share the field — but not the default. A table is browsed a page
     // at a time; a query is usually a question whose answer should fit.
     page: { limit: object ? DEFAULT_PAGE_LIMIT : DEFAULT_QUERY_LIMIT, offset: 0 },
+    cursors: [],
+    scan: null,
+    staged: [],
     paged: false,
     pageNote: null,
     sort: null,
@@ -214,6 +226,13 @@ interface AppState {
   setFilters: (tabId: string, filters: Filter[]) => void;
   setFilterEditor: (editor: AppState["filterEditor"]) => void;
   countExactRows: (tabId: string) => Promise<void>;
+  /** Walks a keyspace page. `delta` of 0 re-reads, 1 is Next, -1 is Prev. */
+  goKeyPage: (tabId: string, delta: -1 | 0 | 1) => Promise<void>;
+  /** Marks or unmarks a key for deletion. The mark is the confirmation. */
+  toggleStaged: (tabId: string, key: string) => void;
+  clearStaged: (tabId: string) => void;
+  /** Runs the staged deletion and drops the rows without moving the cursor. */
+  commitStaged: (tabId: string) => Promise<void>;
   ensureColumns: (tabId: string) => Promise<void>;
   setTabView: (tabId: string, view: QueryTab["view"]) => Promise<void>;
   /** Fetches a diagram tab's schema graph. No-op on any other kind of tab. */
@@ -265,6 +284,7 @@ export const busyKey = {
   diagram: (connectionId: string, schema: string) => `diagram:${connectionId}::${schema}`,
   tables: (connectionId: string) => `tables:${connectionId}`,
   databases: (connectionId: string) => `databases:${connectionId}`,
+  keys: (tabId: string) => `keys:${tabId}`,
 };
 
 /**
@@ -329,6 +349,68 @@ export const useApp = create<AppState>((set, get) => {
   };
 
   /**
+   * Reads one page of a keyspace and puts it in the grid.
+   *
+   * `cursors` is a stack of where each page began, because a cursor walk has no
+   * offsets to count: the server hands back an opaque place to resume and
+   * nothing else. Next pushes, Prev pops, and an empty stack is page one — so
+   * Prev is exact rather than a re-walk from the start.
+   *
+   * The staged marks are dropped on every page turn. A key marked on page three
+   * is not on screen from page four, and committing a deletion the user can no
+   * longer see would be the app acting on something it stopped showing them.
+   */
+  const runKeyPage = async (id: string, delta: -1 | 0 | 1) => {
+    const tab = get().tabs.find((t) => t.id === id);
+    if (!tab?.connectionId || !isKeyspace(tab.object)) return;
+    const connectionId = tab.connectionId;
+
+    // `cursors[i]` is where page i began. Next pushes the resume point the
+    // current page came back with; Prev pops, which is why going back is exact
+    // rather than a re-walk from the start.
+    const cursors =
+      delta === 1
+        ? [...tab.cursors, tab.page.offset]
+        : delta === -1
+          ? tab.cursors.slice(0, -1)
+          : tab.cursors.length > 0
+            ? tab.cursors
+            : [0];
+    const from = cursors[cursors.length - 1] ?? 0;
+
+    patchTab(id, { running: true, error: null, staged: [], selection: null });
+    const started = performance.now();
+    try {
+      const page = await ipc.listKeys(
+        connectionId,
+        keyFilterFrom(tab.filters),
+        from,
+        tab.page.limit,
+      );
+      patchTab(id, {
+        cursors,
+        results: [keyPageToResult(page, Math.round(performance.now() - started))],
+        activeResultIndex: 0,
+        scan: { scanned: page.scanned, exhausted: page.exhausted },
+        // Exact, from DBSIZE. No planner estimate here, so no tilde.
+        rowCount: page.total === null ? null : { value: page.total, exact: true },
+        running: false,
+        clientMs: Math.round(performance.now() - started),
+        // `offset` carries the resume point on a keyspace tab. Reusing the
+        // field rather than adding one keeps every pager control routing
+        // through the same place, and an offset means nothing here anyway.
+        page: { ...tab.page, offset: page.cursor },
+      });
+    } catch (e) {
+      patchTab(id, {
+        running: false,
+        error: asDbError(e),
+        clientMs: Math.round(performance.now() - started),
+      });
+    }
+  };
+
+  /**
    * Moves a tab to a page, whichever kind of tab it is.
    *
    * A table tab regenerates its statement from the paging state. A query tab
@@ -339,6 +421,15 @@ export const useApp = create<AppState>((set, get) => {
   const runPage = async (id: string, page: { limit: number; offset: number }) => {
     const before = get().tabs.find((t) => t.id === id);
     if (!before) return;
+
+    // A keyspace has no offsets to move to: changing the page size restarts the
+    // walk, which is the only honest answer when the pages themselves change
+    // size.
+    if (isKeyspace(before.object)) {
+      patchTab(id, { page, cursors: [] });
+      await runKeyPage(id, 0);
+      return;
+    }
 
     if (before.object) {
       await runTablePage(id, { page });
@@ -395,7 +486,11 @@ export const useApp = create<AppState>((set, get) => {
     track(busyKey.connect(config.id), `Connecting to ${config.name}…`, async () => {
       try {
         const info = await ipc.connect(config, password, sshSecret);
-        const schemas = await ipc.listSchemas(config.id);
+        // A key-value store has no schemas and never will. Asking anyway would
+        // get an honest refusal from the driver and fail the whole connect on
+        // it, so the question is simply not put.
+        const keyspace = isKeyspaceDriver(config.driver);
+        const schemas = keyspace ? [] : await ipc.listSchemas(config.id);
         set((s) => ({
           open: { ...s.open, [config.id]: info },
           schemas: { ...s.schemas, [config.id]: schemas },
@@ -433,11 +528,20 @@ export const useApp = create<AppState>((set, get) => {
           get().openTab(config.id);
         }
 
-        // A connection that named no database is a server: the schema it landed
-        // in belongs to whichever database Postgres substituted, and is not what
-        // the user asked for. List the databases instead.
-        if (isServerOnly(config)) {
+        // A keyspace connection always lists its databases: they are numbered
+        // rather than named, so there is no "the one I asked for" to land in,
+        // and the sidebar's whole job is to say which of them hold anything.
+        if (keyspace || isServerOnly(config)) {
           void get().loadDatabases(config.id);
+          // The namespace is the only thing to look at, so open it rather than
+          // leaving the user on an empty tab next to a list of one thing.
+          if (keyspace) {
+            get().openObjectTab(config.id, {
+              schema: info.currentDatabase,
+              name: info.currentDatabase,
+              kind: "keyspace",
+            });
+          }
           return;
         }
 
@@ -727,6 +831,13 @@ export const useApp = create<AppState>((set, get) => {
       // that matters: it gets another attempt rather than staying blank.
       void get().ensureColumns(existing.id);
       void get().loadSchemaGraph(existing.id);
+      // Unlike the other two this is not idempotent, so it is asked only when
+      // the walk brought back nothing: a keyspace tab reopened after a failure
+      // gets another attempt, and one already showing keys is left alone rather
+      // than silently jumping back to page one.
+      if (isKeyspace(object) && existing.results.length === 0) {
+        void get().goKeyPage(existing.id, 0);
+      }
       return;
     }
     const tab = newTab(connectionId, object);
@@ -736,6 +847,14 @@ export const useApp = create<AppState>((set, get) => {
     // to fetch and no definition to read, only the graph it draws.
     if (object.kind === "diagram") {
       void get().loadSchemaGraph(tab.id);
+      return;
+    }
+
+    // A keyspace is walked, not queried: there is no statement to generate, no
+    // column list to fetch, and no estimate to ask for — the walk itself brings
+    // back the exact total.
+    if (object.kind === "keyspace") {
+      void get().goKeyPage(tab.id, 0);
       return;
     }
     if (!hasRows(object)) {
@@ -867,6 +986,12 @@ export const useApp = create<AppState>((set, get) => {
       set({ toast: { kind: "error", text: "No connection selected for this tab." } });
       return;
     }
+    // A keyspace tab has no statement to run. ⌘R on one means "read this page
+    // again", which is the same thing it means everywhere else.
+    if (isKeyspace(tab.object)) {
+      await get().goKeyPage(tabId, 0);
+      return;
+    }
     const sql = (sqlOverride ?? tab.sql).trim();
     if (!sql) return;
 
@@ -944,6 +1069,15 @@ export const useApp = create<AppState>((set, get) => {
     const object = tab?.object;
     if (!tab || !object) return;
 
+    // A keyspace filter is a glob the server matches and, sometimes, a search
+    // through values. Either way it restarts the walk: there is no page three
+    // of a set the filter has just changed.
+    if (isKeyspace(object)) {
+      patchTab(tabId, { filters, cursors: [] });
+      void get().goKeyPage(tabId, 0);
+      return;
+    }
+
     // The estimate came from the planner's statistics for the whole table, so
     // it stops describing anything the moment a filter is on. Dropping it is
     // honest; the footer offers an exact count in its place.
@@ -988,6 +1122,94 @@ export const useApp = create<AppState>((set, get) => {
                 exact: true,
               }));
       patchTab(tabId, { rowCount });
+    } catch (e) {
+      set({ toast: { kind: "error", text: asDbError(e).message } });
+    }
+  },
+
+  goKeyPage: async (tabId, delta) => {
+    const tab = get().tabs.find((t) => t.id === tabId);
+    if (!tab || !isKeyspace(tab.object)) return;
+    // Nothing to go back to on page one, and nothing to go forward to once the
+    // walk has come round. Guarded here rather than in the footer so a keyboard
+    // route cannot reach a page the buttons refuse.
+    if (delta === -1 && tab.cursors.length <= 1) return;
+    if (delta === 1 && tab.scan?.exhausted) return;
+    await track(busyKey.keys(tabId), "Scanning keys…", () => runKeyPage(tabId, delta));
+  },
+
+  /**
+   * Marks a key for deletion, or takes the mark off.
+   *
+   * Nothing is sent. The mark is what the user reads back before committing:
+   * the row goes red and the status bar prints the command, which is this
+   * app's existing answer to "show a generated write before it runs".
+   */
+  toggleStaged: (tabId, key) =>
+    set((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.id !== tabId
+          ? t
+          : {
+              ...t,
+              staged: t.staged.includes(key)
+                ? t.staged.filter((k) => k !== key)
+                : [...t.staged, key],
+            },
+      ),
+    })),
+
+  clearStaged: (tabId) => patchTab(tabId, { staged: [] }),
+
+  /**
+   * Deletes every staged key.
+   *
+   * The rows are dropped from the result in place rather than by re-reading the
+   * page. A re-read would move the scan cursor, so the keys around the ones just
+   * deleted would shift under the user at the exact moment they are checking
+   * what happened.
+   */
+  commitStaged: async (tabId) => {
+    const tab = get().tabs.find((t) => t.id === tabId);
+    if (!tab?.connectionId || tab.staged.length === 0) return;
+    const result = tab.results[tab.activeResultIndex];
+    if (!result) return;
+
+    // Only what is actually on screen. A key staged before a page turn is one
+    // the user can no longer see, and acting on it would be the app destroying
+    // something it stopped showing them.
+    const keys = stagedKeysIn(result, new Set(tab.staged));
+    if (keys.length === 0) {
+      patchTab(tabId, { staged: [] });
+      return;
+    }
+
+    try {
+      const removed = await ipc.deleteKeys(tab.connectionId, keys);
+      const gone = new Set(keys);
+      set((s) => ({
+        tabs: s.tabs.map((t) =>
+          t.id !== tabId
+            ? t
+            : {
+                ...t,
+                staged: [],
+                selection: null,
+                results: t.results.map((r, i) =>
+                  i !== t.activeResultIndex
+                    ? r
+                    : { ...r, rows: r.rows.filter((row) => !gone.has(row[0] ?? "")) },
+                ),
+                rowCount: t.rowCount
+                  ? { ...t.rowCount, value: Math.max(0, t.rowCount.value - removed) }
+                  : null,
+              },
+        ),
+        toast: {
+          kind: "info",
+          text: `Deleted ${removed} ${removed === 1 ? "key" : "keys"}.`,
+        },
+      }));
     } catch (e) {
       set({ toast: { kind: "error", text: asDbError(e).message } });
     }
@@ -1051,7 +1273,11 @@ export const useApp = create<AppState>((set, get) => {
     const value = tab.results[tab.activeResultIndex]?.rows[row]?.[col];
     if (value === undefined) return;
 
-    const reason = editableReason(tab);
+    // Per cell, because on a keyspace the answer differs down the row: the
+    // value and the TTL are writable, the key and its size are not. Asked here
+    // rather than at commit so a refusal lands on the double click, where the
+    // user is looking, instead of after they have typed something.
+    const reason = cellEditableReason({ ...tab, selection: { row, col } }, col);
     if (reason !== null) {
       // Refusing in silence is the worst version of this: the user double
       // clicks, nothing happens, and there is nothing on screen that says why.
@@ -1092,6 +1318,81 @@ export const useApp = create<AppState>((set, get) => {
     const result = tab.results[tab.activeResultIndex];
     const column = result?.columns[edit.col]?.name;
     if (!result || !column) return;
+
+    // A keyspace row is named by its key, which is its identity rather than a
+    // primary key discovered in a catalogue. Nothing else about the write
+    // changes: the same `update_cell` runs, and the backend still decides what
+    // the named field means.
+    if (isKeyspace(tab.object)) {
+      const keys = keyRowIdentity(result, edit.row);
+      if (!keys) {
+        set({ toast: { kind: "error", text: "That row has no key to write to." }, cellEdit: null });
+        return;
+      }
+      const reason = cellEditableReason(tab, edit.col);
+      if (reason !== null) {
+        set({ toast: { kind: "error", text: reason }, cellEdit: null });
+        return;
+      }
+
+      // The TTL column is typed in the units it prints — "15m", "2d 4h",
+      // "never" — and the wire takes seconds. Converting here means the field
+      // accepts back exactly what it showed, instead of making the user
+      // translate their own expiry into a number.
+      let value = edit.isNull ? null : edit.draft;
+      if (column === "ttl" && value !== null) {
+        const seconds = parseTtl(value);
+        if (seconds === undefined) {
+          set({
+            toast: {
+              kind: "error",
+              text: `"${value}" is not a duration. Try 900, 15m, 2d 4h, or never.`,
+            },
+            cellEdit: null,
+          });
+          return;
+        }
+        value = seconds === null ? "" : String(seconds);
+      }
+
+      set({ cellEdit: null });
+      try {
+        const stored = await ipc.updateCell(
+          tab.connectionId,
+          object.schema,
+          object.name,
+          column,
+          value,
+          keys,
+        );
+        // The TTL column shows a duration, not the seconds the server returned.
+        const shown = column === "ttl" ? formatTtl(Number(stored)) : stored;
+        set((s) => ({
+          tabs: s.tabs.map((t) =>
+            t.id !== edit.tabId
+              ? t
+              : {
+                  ...t,
+                  results: t.results.map((r, i) =>
+                    i !== t.activeResultIndex
+                      ? r
+                      : {
+                          ...r,
+                          rows: r.rows.map((existing, ri) =>
+                            ri !== edit.row
+                              ? existing
+                              : existing.map((v, ci) => (ci === edit.col ? shown : v)),
+                          ),
+                        },
+                  ),
+                },
+          ),
+        }));
+      } catch (e) {
+        set({ toast: { kind: "error", text: asDbError(e).message } });
+      }
+      return;
+    }
 
     // The same rule the status bar previewed with, so what runs is what was
     // shown. A key that is not in the result, or is NULL, cannot identify
@@ -1227,3 +1528,27 @@ export const useApp = create<AppState>((set, get) => {
 });
 
 export const activeTab = (s: AppState) => s.tabs.find((t) => t.id === s.activeTabId) ?? null;
+
+/**
+ * Shared empty list, so a tab that has nothing staged still answers with the
+ * same reference every time.
+ *
+ * `?? []` would not do: a fresh array literal is a fresh reference, and a
+ * selector whose reference changes on every call is exactly what the comment
+ * below is about.
+ */
+const NO_KEYS: readonly string[] = [];
+
+/**
+ * The keys staged for deletion on one tab.
+ *
+ * Returns the stored array itself, never a copy or a derived `Set`. Zustand
+ * runs on `useSyncExternalStore`, which calls the selector on every render and
+ * compares the result with `Object.is` — so a selector that builds a new object
+ * each time reports a change on every render, and React spins until it gives up
+ * and unmounts the tree. The caller derives its own `Set` behind a `useMemo`.
+ */
+export const stagedKeys =
+  (tabId: string) =>
+  (s: AppState): readonly string[] =>
+    s.tabs.find((t) => t.id === tabId)?.staged ?? NO_KEYS;

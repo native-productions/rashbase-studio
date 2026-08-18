@@ -13,6 +13,7 @@
 //! an error it discovers by asking.
 
 pub mod postgres;
+pub mod redis;
 pub mod registry;
 pub mod types;
 
@@ -45,6 +46,9 @@ pub struct Capabilities {
     pub cancel: bool,
     /// Whether relations can be dumped to a file.
     pub export: bool,
+    /// Whether this driver has a flat key namespace to walk instead of tables.
+    /// True and `schemas` false is what a key-value store looks like from here.
+    pub keyspace: bool,
 }
 
 /// Where a dump's bytes go, and how it says which relation it is on.
@@ -193,5 +197,32 @@ pub trait Session: Send + Sync {
 
     async fn view_definition(&self, _schema: &str, _name: &str) -> Result<String> {
         Err(Error::Unsupported("reading a view definition"))
+    }
+
+    // -- Keyspace -----------------------------------------------------------
+
+    /// One page of a walk over a flat key namespace.
+    ///
+    /// Cursor-based rather than offset-based because that is the only paging a
+    /// store of this kind can offer honestly: keys move between pages as the
+    /// namespace changes under the walk, and an offset would silently skip and
+    /// repeat rows. `cursor` of `0` starts a walk; the page says where to
+    /// resume and whether the walk came round.
+    ///
+    /// `limit` caps the keys *returned*, not the keys walked. A filter the
+    /// store cannot push down is applied after reading, so the page reports
+    /// what the walk actually cost.
+    async fn list_keys(&self, _filter: &KeyFilter, _cursor: u64, _limit: usize) -> Result<KeyPage> {
+        Err(Error::Unsupported("browsing a keyspace"))
+    }
+
+    /// Removes keys by name, and reports how many existed.
+    ///
+    /// Typed rather than composed into a statement by the caller, for the same
+    /// reason `update_cell` is: a key is arbitrary bytes, and a key holding a
+    /// space or a quote would break any command built by pasting names
+    /// together.
+    async fn delete_keys(&self, _keys: &[String]) -> Result<u64> {
+        Err(Error::Unsupported("deleting keys"))
     }
 }

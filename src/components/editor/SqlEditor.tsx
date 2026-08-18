@@ -21,6 +21,7 @@ import {
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search";
 import { tags as t } from "@lezer/highlight";
 import { setActiveEditor } from "@/lib/activeEditor";
+import { isKeyspaceDriver } from "@/lib/constants/connection";
 import { useApp } from "@/store/app";
 
 /**
@@ -122,6 +123,18 @@ export function SqlEditor({ tabId, value }: { tabId: string; value: string }) {
   const schemas = useApp((s) => s.schemas);
   const tables = useApp((s) => s.tables);
 
+  /**
+   * Whether this tab talks to a key-value store rather than a SQL server.
+   *
+   * Read from the tab's own connection, not the active one: a console tab stays
+   * pointed at the connection it was opened on while the sidebar moves.
+   */
+  const console = useApp((s) => {
+    const tab = s.tabs.find((t) => t.id === tabId);
+    const config = s.connections.find((c) => c.id === tab?.connectionId);
+    return !!config && isKeyspaceDriver(config.driver);
+  });
+
   // Table names for completion. Columns arrive with column introspection in
   // Phase 1; until then this is still enough to stop typos in table names.
   const completionSchema = useMemo(() => {
@@ -149,8 +162,16 @@ export function SqlEditor({ tabId, value }: { tabId: string; value: string }) {
       closeBrackets(),
       autocompletion(),
       syntaxHighlighting(highlight),
-      sql({ dialect: PostgreSQL, schema: completionSchema, upperCaseKeywords: false }),
-      placeholder("Write SQL, then ⌘⏎ to run. Select a fragment to run only that."),
+      // A Redis command is not SQL, and the SQL grammar colours it wrongly:
+      // `GET` is not a keyword, `user:1` is not an operator applied to a
+      // number. Plain text is the honest rendering, and everything else about
+      // the editor — the theme, the metrics, the keymap — stays as it is.
+      ...(console
+        ? [placeholder("One command per line, then ⌘⏎ to run. Select a line to run only that.")]
+        : [
+            sql({ dialect: PostgreSQL, schema: completionSchema, upperCaseKeywords: false }),
+            placeholder("Write SQL, then ⌘⏎ to run. Select a fragment to run only that."),
+          ]),
       theme,
       EditorView.lineWrapping,
       // ⌘⏎ is deliberately absent: the global hotkey layer owns it, so the
@@ -184,7 +205,10 @@ export function SqlEditor({ tabId, value }: { tabId: string; value: string }) {
     // undo history. `value` is intentionally not a dependency, otherwise every
     // keystroke would rebuild the editor.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tabId, completionSchema]);
+    // `console` too: switching a tab between a SQL server and a key-value store
+    // changes which language extension is loaded, and CodeMirror cannot be told
+    // that without rebuilding the view.
+  }, [tabId, completionSchema, console]);
 
   return <div ref={host} className="h-full overflow-hidden" />;
 }

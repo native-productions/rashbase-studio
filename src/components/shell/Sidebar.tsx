@@ -15,6 +15,7 @@ import { DeleteConnectionDialog } from "@/components/connection/DeleteConnection
 import { objectMenuItems, runObjectMenuAction } from "@/components/shell/objectMenu";
 import { KIND_GLYPH, OBJECT_GROUPS, type SidebarMember } from "@/lib/constants/sidebar";
 import { CLUSTER_OBJECTS, CLUSTER_SCHEMA } from "@/lib/constants/cluster";
+import { isKeyspaceDriver } from "@/lib/constants/connection";
 import { findEnvironment } from "@/lib/utils/environments";
 import { asDbError } from "@/lib/utils/errors";
 import { isServerOnly, nestConnections } from "@/lib/utils/connections";
@@ -215,13 +216,19 @@ export function Sidebar() {
   // A connection that named no database is a server, so what it has to show is
   // its databases, not the schema of whichever one Postgres substituted.
   const activeConfig = connections.find((c) => c.id === activeConnectionId);
-  const serverOnly = !!activeConfig && isServerOnly(activeConfig);
-  const soleSchema = !serverOnly && activeSchemas.length === 1;
+  /**
+   * A key-value store is always a list of databases plus one namespace: they
+   * are numbered rather than named, so there is no "the one I asked for" and
+   * nothing is gained by hiding the rest.
+   */
+  const keyspace = !!activeConfig && isKeyspaceDriver(activeConfig.driver);
+  const serverOnly = !keyspace && !!activeConfig && isServerOnly(activeConfig);
+  const soleSchema = !serverOnly && !keyspace && activeSchemas.length === 1;
 
   // With no schema row there is nothing to press, so the one schema has to open
   // itself — and it is the fetch behind that toggle the groups need.
   useEffect(() => {
-    const only = soleSchema ? activeSchemas[0] : undefined;
+    const only = soleSchema && !keyspace ? activeSchemas[0] : undefined;
     if (!only || !activeConnectionId) return;
     if (!expanded[`${activeConnectionId}::${only.name}`]) {
       void toggleSchema(activeConnectionId, only.name);
@@ -302,7 +309,7 @@ export function Sidebar() {
    * user cannot see.
    */
   const visibleOrder = useMemo(() => {
-    if (!activeConnectionId || serverOnly) return [];
+    if (!activeConnectionId || serverOnly || keyspace) return [];
     const out: string[] = [];
     for (const schema of activeSchemas) {
       const key = `${activeConnectionId}::${schema.name}`;
@@ -323,6 +330,7 @@ export function Sidebar() {
   }, [
     activeConnectionId,
     serverOnly,
+    keyspace,
     activeSchemas,
     soleSchema,
     expanded,
@@ -497,7 +505,9 @@ export function Sidebar() {
       {activeConnectionId && open[activeConnectionId] && (
         <>
           <div className="mt-2 flex items-center justify-between border-t border-line-soft px-3 pt-3 pb-1.5">
-            <span className="label-eyebrow">{serverOnly ? "Databases" : "Schema"}</span>
+            <span className="label-eyebrow">
+              {serverOnly || keyspace ? "Databases" : "Schema"}
+            </span>
             <button
               onClick={() => openTab(activeConnectionId)}
               title="New query  ⌘T"
@@ -522,13 +532,84 @@ export function Sidebar() {
             <input
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
-              placeholder={serverOnly ? "Filter server" : "Filter tables"}
+              placeholder={
+                keyspace ? "Filter databases" : serverOnly ? "Filter server" : "Filter tables"
+              }
               className="w-full rounded border border-line-soft bg-base px-2 py-1 text-[11px] text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none"
             />
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-3">
-            {serverOnly ? (
+            {keyspace ? (
+              /* A key-value store's whole tree: numbered databases, each of
+                 which is one flat namespace. No schemas, no object groups, and
+                 no disclosure — there is nothing under a database except the
+                 keys, and a caret hiding one row is a caret for its own sake. */
+              visibleDatabases === null ? (
+                <p className="flex items-center gap-1.5 py-2 pl-1.5 text-[11px] text-ink-faint">
+                  <Spinner size={9} className="text-accent" label="Reading databases" />
+                  Reading databases…
+                </p>
+              ) : visibleDatabases.length === 0 ? (
+                <p className="py-2 pl-1.5 text-[11px] text-ink-faint">
+                  {needle ? "No match" : "No databases."}
+                </p>
+              ) : (
+                visibleDatabases.map((name) => {
+                  const here = name === open[activeConnectionId]?.currentDatabase;
+                  const opening = !!busy[busyKey.database(activeConnectionId, name)];
+                  // The tab this row would open, so the row can show that it is
+                  // the one on screen rather than leaving the grid unattributed.
+                  const viewing = `${activeConnectionId}::${name}.${name}` === viewedTable;
+                  return (
+                    <button
+                      key={name}
+                      disabled={opening}
+                      aria-busy={opening || undefined}
+                      onClick={() =>
+                        here
+                          ? openObjectTab(activeConnectionId, {
+                              schema: name,
+                              name,
+                              kind: "keyspace",
+                            })
+                          : // Another database is another session, exactly as it
+                            // is on the SQL side: derived, credential inherited,
+                            // and the tabs already open stay pointed where they
+                            // were.
+                            void openDatabase(activeConnectionId, name)
+                      }
+                      className={[
+                        "flex w-full items-center gap-2 rounded py-1 pr-1.5 pl-1.5 text-left text-[12px]",
+                        viewing
+                          ? "bg-accent-wash text-ink"
+                          : "text-ink-muted hover:bg-hover hover:text-ink",
+                      ].join(" ")}
+                    >
+                      {opening ? (
+                        <Spinner size={9} className="text-accent" label={`Opening ${name}`} />
+                      ) : (
+                        <span
+                          className={[
+                            "size-1.5 shrink-0 rounded-full",
+                            here ? "bg-accent" : "bg-ink-faint/40",
+                          ].join(" ")}
+                        />
+                      )}
+                      <span className="truncate font-mono">{name}</span>
+                      {here && (
+                        <span
+                          aria-hidden="true"
+                          className="ml-auto shrink-0 text-[10px] text-ink-faint"
+                        >
+                          {KIND_GLYPH.keyspace}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })
+              )
+            ) : serverOnly ? (
               <>
                 <DisclosureRow
                   label="Databases"

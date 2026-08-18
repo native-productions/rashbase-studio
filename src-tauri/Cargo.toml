@@ -30,6 +30,11 @@ sqlx = { version = "0.8", default-features = false, features = [
     "postgres",
 ] }
 tokio = { version = "1", features = ["sync", "time", "net", "io-util", "rt-multi-thread"] }
+
+# Redis. `tokio-comp` is the async runtime glue; no cluster or TLS features,
+# because a tunnelled connection is already encrypted by SSH and a direct one
+# is reached the same way `sqlx` reaches Postgres.
+redis = { version = "1", default-features = false, features = ["tokio-comp"] }
 futures = "0.3"
 # `Arc<dyn Session>` needs object-safe async methods, which native `async fn`
 # in traits still does not give.

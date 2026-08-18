@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { COMMANDS, runCommand } from "@/lib/commands";
+import { COMMANDS, COMMANDS_BY_ID, runCommand } from "@/lib/commands";
 import { useApp } from "@/store/app";
 
 /**
@@ -97,6 +97,16 @@ export function useHotkeys() {
         // A bare Escape inside a text field belongs to that field (dismissing
         // autocomplete, for one). Modified shortcuts still win.
         if (binding.key === "escape" && inTextField(e.target)) return;
+        // A disabled command does not get to swallow the key.
+        //
+        // Two commands may share a binding — Escape both clears a staged
+        // deletion and cancels a running query — and without this the first one
+        // in the registry would claim the keystroke whether or not it could act
+        // on it, leaving the second permanently unreachable. `runCommand`
+        // re-checks, which is what keeps the palette honest; this is what keeps
+        // the keyboard honest.
+        const cmd = COMMANDS_BY_ID.get(id);
+        if (cmd?.enabled && !cmd.enabled()) continue;
         e.preventDefault();
         runCommand(id);
         return;

@@ -39,6 +39,20 @@ export const newFilter = (): Filter => ({
   values: [""],
 });
 
+/**
+ * A blank keyspace filter.
+ *
+ * Opens on the key with a prefix, because that is both the filter people reach
+ * for and the only cheap one: a value search reads every key the walk touches,
+ * and defaulting to it would make the first filter anyone tries the slowest.
+ */
+export const newKeyFilter = (): Filter => ({
+  id: `filter-${++draftSeq}`,
+  column: "key",
+  op: "prefix",
+  values: [""],
+});
+
 /** What a chip says: the column, the operator, and the value as typed. */
 export function summarizeFilter(f: Filter): { column: string; op: string; value: string } {
   const arity = OP_ARITY[f.op];

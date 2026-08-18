@@ -1,8 +1,80 @@
 import { Pager } from "@/components/table/Pager";
+import { PageSizeMenu } from "@/components/table/PageSizeMenu";
 import { VIEW_LABEL } from "@/lib/constants/ui";
-import { hasRows, viewsFor } from "@/lib/utils/tabs";
+import { hasRows, isKeyspace, viewsFor } from "@/lib/utils/tabs";
 import type { QueryTab } from "@/lib/types";
 import { useApp } from "@/store/app";
+
+/**
+ * The keyspace footer.
+ *
+ * Not the ordinary pager, because a cursor walk has no offsets: there is no
+ * "row 400 of 38,000" to show, only how far the walk has gone and whether it
+ * has come round. What it shows instead is what the page actually cost —
+ * a value filter is answered by reading, so a page of 12 keys can be a walk of
+ * 50,000, and a footer that only said "12 keys" would be claiming a
+ * completeness the scan never had.
+ */
+function KeyspaceFooter({ tab }: { tab: QueryTab }) {
+  const goKeyPage = useApp((s) => s.goKeyPage);
+  const setPageLimit = useApp((s) => s.setPageLimit);
+
+  const rows = tab.results[tab.activeResultIndex]?.rows.length ?? 0;
+  const scanned = tab.scan?.scanned ?? 0;
+  const exhausted = tab.scan?.exhausted ?? false;
+  const atStart = tab.cursors.length <= 1;
+  // The walk read more than it kept, which only happens under a value filter.
+  // Worth saying, because it is the difference between "12 keys exist" and
+  // "12 of the 50,000 I looked at matched".
+  const filtered = scanned > rows;
+
+  return (
+    <>
+      <div className="mx-auto flex items-center gap-1">
+        <button
+          onClick={() => void goKeyPage(tab.id, -1)}
+          disabled={atStart || tab.running}
+          aria-label="Previous page"
+          title="Previous page"
+          className="rounded px-1.5 py-0.5 text-ink-faint hover:bg-hover hover:text-ink disabled:pointer-events-none disabled:opacity-30"
+        >
+          ‹
+        </button>
+        <PageSizeMenu limit={tab.page.limit} onChange={(n) => setPageLimit(tab.id, n)} />
+        <button
+          onClick={() => void goKeyPage(tab.id, 1)}
+          disabled={exhausted || tab.running}
+          aria-label="Next page"
+          // The walk is what ends, not the list: saying so beats a dead button
+          // that looks like the app stopped working.
+          title={exhausted ? "The scan has come full circle" : "Next page"}
+          className="rounded px-1.5 py-0.5 text-ink-faint hover:bg-hover hover:text-ink disabled:pointer-events-none disabled:opacity-30"
+        >
+          ›
+        </button>
+      </div>
+
+      <div
+        className={[
+          "shrink-0 font-mono tabular-nums",
+          tab.running ? "text-ink-faint/50" : "text-ink-faint",
+        ].join(" ")}
+      >
+        <span className="text-ink-muted">{rows.toLocaleString()}</span> keys
+        {filtered && (
+          <span title="A value filter is answered by reading, so this page cost a walk of this many keys.">
+            {" "}
+            · scanned {scanned.toLocaleString()}
+          </span>
+        )}
+        {tab.rowCount && (
+          // Exact, from DBSIZE. No tilde, because nothing here was estimated.
+          <span> · {tab.rowCount.value.toLocaleString()} in db</span>
+        )}
+      </div>
+    </>
+  );
+}
 
 /**
  * The bar under a table tab: which view you are in, where you are in the rows,
@@ -20,7 +92,7 @@ export function TableFooter({ tab }: { tab: QueryTab }) {
   const { limit, offset } = tab.page;
   const rows = tab.results[tab.activeResultIndex]?.rows.length ?? 0;
   // The pager belongs to the rows, so it is absent anywhere the rows are not.
-  const showsPager = tab.view === "data" && hasRows(tab.object);
+  const showsPager = tab.view === "data" && hasRows(tab.object) && !isKeyspace(tab.object);
 
   const first = rows === 0 ? 0 : offset + 1;
   const last = offset + rows;
@@ -42,7 +114,9 @@ export function TableFooter({ tab }: { tab: QueryTab }) {
         ))}
       </div>
 
-      {showsPager && (
+      {tab.view === "data" && isKeyspace(tab.object) && <KeyspaceFooter tab={tab} />}
+
+      {showsPager && !isKeyspace(tab.object) && (
         <>
           <div className="mx-auto">
             <Pager

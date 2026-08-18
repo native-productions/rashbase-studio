@@ -8,6 +8,9 @@ export const KIND_GLYPH: Record<DbObject["kind"], string> = {
   other: "▫",
   function: "ƒ",
   diagram: "◇",
+  // A flat namespace rather than a shape: no columns to rule, no rows to line
+  // up, just a bag with things in it.
+  keyspace: "⬡",
 };
 
 /** Schema-less object, before the schema it lives in is attached. */

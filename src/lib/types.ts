@@ -208,6 +208,49 @@ export interface DbError {
 }
 
 // ---------------------------------------------------------------------------
+// Keyspace: what a key-value store has instead of tables
+// ---------------------------------------------------------------------------
+
+export interface KeyEntry {
+  key: string;
+  /** "string" | "hash" | "list" | "set" | "zset" | "stream", as the server says
+   *  it. Free-form because the backend passes the store's own word through. */
+  kind: string;
+  /** Seconds left, `-1` for a key that never expires, `null` when not read.
+   *  `-1` and `null` are different answers and stay tellable apart. */
+  ttl: number | null;
+  /** Bytes for a string, members for everything else. */
+  size: number | null;
+  /** As much of the value as the scan was willing to read. Collections arrive
+   *  as JSON, which is what lets the row panel's tree draw them unchanged. */
+  preview: string | null;
+}
+
+export interface KeyPage {
+  keys: KeyEntry[];
+  /** Where to resume. Opaque; `0` starts a walk and is also what comes back
+   *  once the walk has come all the way round. */
+  cursor: number;
+  /** How many keys were walked to fill this page. A value filter is answered by
+   *  reading, so a page of 12 can cost a walk of 50,000 — and the footer has to
+   *  be able to say so rather than implying it read everything. */
+  scanned: number;
+  /** Set when the walk came round. A cursor walk can return an empty page and
+   *  still have more to give, so this is reported rather than inferred. */
+  exhausted: boolean;
+  /** Exact, from DBSIZE. No estimate and therefore no `~`. */
+  total: number | null;
+}
+
+export interface KeyFilter {
+  /** Glob the server itself matches. `null` means every key. Nearly free. */
+  pattern: string | null;
+  /** Text that has to appear in the value. Costs a read of everything walked. */
+  contains: string | null;
+  caseSensitive: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Export
 // ---------------------------------------------------------------------------
 
@@ -289,7 +332,11 @@ export type FilterOp =
   | "contains"
   | "notContains"
   | "isNull"
-  | "isNotNull";
+  | "isNotNull"
+  /** Key-value stores only: a glob the server matches against key names. */
+  | "matches"
+  /** Key-value stores only: `matches` with the trailing `*` supplied. */
+  | "prefix";
 
 export interface Filter {
   id: string;
@@ -315,8 +362,13 @@ export interface DbObject {
    * `"diagram"` is the schema itself rather than something inside it: an ERD
    * tab is an object tab whose object is the whole schema, which is what lets
    * it reuse tab dedupe, the tab strip, and pinning without a second tab kind.
+   *
+   * `"keyspace"` is the same trick one driver over: a key-value store has one
+   * flat namespace, so its tab is an object tab whose object is the whole
+   * database. Everything downstream — dedupe, pinning, the tab strip, the grid
+   * — works without knowing a second tab kind exists.
    */
-  kind: TableEntry["kind"] | "function" | "diagram";
+  kind: TableEntry["kind"] | "function" | "diagram" | "keyspace";
   /** Functions only. They are keyed by oid because overloads share a name. */
   oid?: number;
 }
@@ -340,6 +392,25 @@ export interface QueryTab {
   /** Paging is server-side, so it survives 30k rows. On a query tab the limit
    *  doubles as the row cap for statements that cannot be paged. */
   page: { limit: number; offset: number };
+  /**
+   * Keyspace tabs: where each page of the walk started, so Prev can go back.
+   *
+   * A stack rather than an offset, because a cursor walk has no offsets to
+   * count: the server hands back an opaque place to resume and nothing else.
+   * The last entry is where the page on screen began; pushing is Next, popping
+   * is Prev, and an empty stack is page one.
+   */
+  cursors: number[];
+  /** Keyspace tabs: what the last page cost and whether the walk finished. */
+  scan: { scanned: number; exhausted: boolean } | null;
+  /**
+   * Keys marked for deletion but not yet written.
+   *
+   * The staging is the confirmation: the rows go red and the status bar prints
+   * the command, so ⌘S runs something the user has already read. Held per tab
+   * because a mark made while looking at one database means nothing in another.
+   */
+  staged: string[];
   /**
    * Query tabs: whether the last run wrapped the SQL so it could be paged.
    * False means the rows on screen are however many the cap allowed.

@@ -14,6 +14,9 @@ const tableTab = (patch: Partial<QueryTab> = {}): QueryTab => ({
   title: "users",
   object: { schema: "public", name: "users", kind: "table" },
   page: { limit: 200, offset: 0 },
+  cursors: [],
+  scan: null,
+  staged: [],
   paged: false,
   pageNote: null,
   sort: null,
@@ -32,6 +35,20 @@ const tableTab = (patch: Partial<QueryTab> = {}): QueryTab => ({
   clientMs: null,
   ...patch,
 });
+
+/**
+ * A keyspace tab: the same shape, pointed at a flat namespace instead of a
+ * relation. `staged` is what the delete gesture fills, and what decides which
+ * of the two commands bound to Escape answers.
+ */
+const keyspaceTab = (patch: Partial<QueryTab> = {}): QueryTab =>
+  tableTab({
+    object: { schema: "db0", name: "db0", kind: "keyspace" },
+    cursors: [0],
+    scan: { scanned: 0, exhausted: true },
+    staged: [],
+    ...patch,
+  });
 
 /** Every binding must be claimed exactly once, or the first one silently wins. */
 function claimants(keys: string): string[] {
@@ -55,9 +72,75 @@ test("⌘⇧K switches database and ⌘⇧N opens the connection sheet", () => {
   expect(claimants("⌘⇧N")).toEqual(["connection.new"]);
 });
 
-test("no two commands share a binding", () => {
-  const bound = [...COMMANDS_BY_ID.values()].flatMap((c) => (c.keys ? [c.keys] : []));
-  expect(bound.length).toBe(new Set(bound).size);
+/**
+ * A binding may be shared, but only by commands that can say when they do not
+ * apply.
+ *
+ * The keyboard layer takes the first *enabled* match, so a shared binding is
+ * safe exactly when every command holding it declares `enabled`. One that does
+ * not is always enabled, so it would swallow the keystroke forever and leave
+ * everything after it permanently unreachable — silently, since nothing would
+ * throw and the palette would still list them all.
+ */
+test("a shared binding is only ever held by commands that can be disabled", () => {
+  const byKeys = new Map<string, string[]>();
+  for (const c of COMMANDS_BY_ID.values()) {
+    if (c.keys) byKeys.set(c.keys, [...(byKeys.get(c.keys) ?? []), c.id]);
+  }
+
+  for (const [keys, ids] of byKeys) {
+    if (ids.length === 1) continue;
+    for (const id of ids) {
+      const cmd = COMMANDS_BY_ID.get(id)!;
+      expect(`${keys}:${id}:${typeof cmd.enabled}`).toBe(`${keys}:${id}:function`);
+    }
+  }
+});
+
+/**
+ * Escape is held by two commands, and which one answers depends on the tab.
+ * Before the keyboard layer checked `enabled`, the first in the registry took
+ * the key whether or not it could act, and the second was dead.
+ */
+test("escape clears staged deletions and cancels a query, each in its own state", () => {
+  const staged = COMMANDS_BY_ID.get("keys.clearStaged")!;
+  const cancel = COMMANDS_BY_ID.get("query.cancel")!;
+  expect(staged.keys).toBe("Esc");
+  expect(cancel.keys).toBe("Esc");
+
+  // A keyspace tab with marks: staged wins, cancel stands down.
+  useApp.setState({ tabs: [keyspaceTab({ staged: ["a"] })], activeTabId: "tab-1" });
+  expect(staged.enabled!()).toBe(true);
+  expect(cancel.enabled!()).toBe(false);
+
+  // A running query with nothing marked: the other way round.
+  useApp.setState({ tabs: [tableTab({ running: true })], activeTabId: "tab-1" });
+  expect(staged.enabled!()).toBe(false);
+  expect(cancel.enabled!()).toBe(true);
+});
+
+test("⌘S deletes staged keys, and is offered only when something is staged", () => {
+  const commit = COMMANDS_BY_ID.get("keys.commitStaged")!;
+  expect(commit.keys).toBe("⌘S");
+
+  useApp.setState({ tabs: [keyspaceTab({ staged: [] })], activeTabId: "tab-1" });
+  expect(commit.enabled!()).toBe(false);
+
+  useApp.setState({ tabs: [keyspaceTab({ staged: ["nvp:na:1"] })], activeTabId: "tab-1" });
+  expect(commit.enabled!()).toBe(true);
+
+  // Never on a table tab, whose rows are deleted by a statement the user writes.
+  useApp.setState({ tabs: [tableTab()], activeTabId: "tab-1" });
+  expect(commit.enabled!()).toBe(false);
+});
+
+test("clearing staged deletions sends nothing and leaves the rows alone", () => {
+  useApp.setState({
+    tabs: [keyspaceTab({ staged: ["a", "b"] })],
+    activeTabId: "tab-1",
+  });
+  runCommand("keys.clearStaged");
+  expect(useApp.getState().tabs[0]!.staged).toEqual([]);
 });
 
 test("⌘F opens the filter editor on the active table tab", () => {

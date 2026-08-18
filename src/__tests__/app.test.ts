@@ -29,7 +29,7 @@ mock.module("@tauri-apps/api/core", () => ({
   },
 }));
 
-const { useApp } = await import("@/store/app");
+const { useApp, stagedKeys } = await import("@/store/app");
 
 const server: ConnectionConfig = {
   id: "server",
@@ -43,6 +43,36 @@ const server: ConnectionConfig = {
   environment: "production",
   parentId: null,
 };
+
+/** A keyspace tab, with only the fields the staged-keys selector reads. */
+const keyspaceTab = () => ({
+  id: "tab-k",
+  connectionId: "server",
+  title: "db0",
+  object: { schema: "db0", name: "db0", kind: "keyspace" as const },
+  pinned: false,
+  page: { limit: 200, offset: 0 },
+  cursors: [0],
+  scan: null,
+  staged: [] as string[],
+  paged: false,
+  pageNote: null,
+  sort: null,
+  filters: [],
+  rowCount: null,
+  view: "data" as const,
+  columns: null,
+  indexes: null,
+  graph: null,
+  selection: null,
+  definition: null,
+  sql: "",
+  results: [],
+  activeResultIndex: 0,
+  running: false,
+  error: null,
+  clientMs: null,
+});
 
 const saved = () => calls.filter((c) => c.name === "save_connection");
 const connected = () => calls.filter((c) => c.name === "connect");
@@ -125,4 +155,56 @@ test("a database derived from a derived connection points back at the server", a
   await useApp.getState().openDatabase("child", "other");
 
   expect((saved()[0]?.args.config as ConnectionConfig).parentId).toBe("server");
+});
+
+/**
+ * A selector that builds a new object each call is an infinite render loop.
+ *
+ * Zustand runs on `useSyncExternalStore`, which calls the selector on every
+ * render and compares the result with `Object.is`. A selector returning
+ * `new Set(...)` therefore reports a change every single render, React spins
+ * until it gives up, and the tree unmounts — which on screen is the whole
+ * window going black.
+ *
+ * It shipped once, in the grid's staged-deletion selector, and it only fired
+ * once a key was actually staged: while the list was empty the selector
+ * returned a stable `null` and everything looked fine. That is what makes the
+ * class worth a test rather than a code review note.
+ */
+test("the staged-keys selector returns the same reference until it really changes", () => {
+  useApp.setState({
+    tabs: [
+      {
+        ...keyspaceTab(),
+        id: "tab-k",
+        staged: ["nvp:na:1"],
+      },
+    ],
+    activeTabId: "tab-k",
+  });
+
+  const select = stagedKeys("tab-k");
+  const first = select(useApp.getState());
+  const second = select(useApp.getState());
+
+  // Referential, not structural: `toEqual` would pass on a fresh copy and miss
+  // the whole bug.
+  expect(first).toBe(second);
+  expect(first).toEqual(["nvp:na:1"]);
+
+  // Staging something else is a real change, and has to be visible as one.
+  useApp.getState().toggleStaged("tab-k", "nvp:na:2");
+  const third = select(useApp.getState());
+  expect(third).not.toBe(first);
+  expect(third).toEqual(["nvp:na:1", "nvp:na:2"]);
+
+  // Unstaging back to empty still answers with a stable reference, which is
+  // the state the old selector happened to get right.
+  useApp.getState().clearStaged("tab-k");
+  expect(select(useApp.getState())).toBe(select(useApp.getState()));
+
+  // And a tab that does not exist answers with the same empty list every time,
+  // rather than a fresh `[]` — which is the same bug wearing a different shape.
+  const missing = stagedKeys("tab-nowhere");
+  expect(missing(useApp.getState())).toBe(missing(useApp.getState()));
 });

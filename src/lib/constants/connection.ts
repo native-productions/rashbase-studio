@@ -22,10 +22,80 @@ export const DEFAULT_PORT = 5432;
 export const DEFAULT_USER = "postgres";
 export const DEFAULT_DATABASE = "postgres";
 
-/** The connection form's starting state, which is also a working local one. */
-/** The only driver so far. Named rather than assumed, so adding a second one
- *  is a change to this list and not a hunt for hardcoded strings. */
 export const DEFAULT_DRIVER = "postgres";
+
+/**
+ * What each driver is called, and what the form should assume about it.
+ *
+ * One entry per supported server, so adding a third is a change to this list
+ * rather than a hunt through the form for hardcoded strings. Everything the
+ * connection sheet varies by driver is a field here; nothing about a driver is
+ * decided by a comparison against its id somewhere else.
+ */
+export interface DriverSpec {
+  /** Matches `ConnectionConfig.driver` and the backend's `Driver::id`. */
+  id: string;
+  label: string;
+  port: number;
+  /** URL schemes a pasted connection string may use. */
+  schemes: string[];
+  /** What the `database` field is called and means for this driver. */
+  database: {
+    label: string;
+    placeholder: string;
+    /** Shown under the field. Blank means something different per driver. */
+    hint: string;
+    default: string;
+  };
+  /** SSL modes worth offering. A store with one transport has fewer answers. */
+  sslModes: SslMode[];
+  /** Whether this driver has schemas, tables, and SQL, or a flat keyspace. */
+  keyspace: boolean;
+}
+
+export const DRIVERS: DriverSpec[] = [
+  {
+    id: "postgres",
+    label: "PostgreSQL",
+    port: 5432,
+    schemes: ["postgres:", "postgresql:"],
+    database: {
+      label: "Database",
+      placeholder: "Choose after connecting",
+      hint: "Blank lists every database on the server",
+      default: "postgres",
+    },
+    sslModes: ["disable", "prefer", "require", "verify-ca", "verify-full"],
+    keyspace: false,
+  },
+  {
+    id: "redis",
+    label: "Redis",
+    port: 6379,
+    schemes: ["redis:", "rediss:"],
+    database: {
+      label: "DB",
+      placeholder: "0",
+      // Numbered rather than named, and there are always sixteen of them, so
+      // "blank lists every database" would be describing a different product.
+      hint: "Blank starts at db0. Pick another from the sidebar.",
+      default: "",
+    },
+    // A tunnel is already encrypted by SSH and a direct connection to Redis is
+    // usually on a private network. The verifying modes are Postgres-shaped
+    // answers to a question this driver does not ask.
+    sslModes: ["disable", "require"],
+    keyspace: true,
+  },
+];
+
+export const driverSpec = (id: string): DriverSpec =>
+  DRIVERS.find((d) => d.id === id) ?? DRIVERS[0]!;
+
+/** Whether a connection's driver browses a flat keyspace rather than tables. */
+export const isKeyspaceDriver = (driver: string): boolean => driverSpec(driver).keyspace;
+
+/** The connection form's starting state, which is also a working local one. */
 
 export const BLANK_CONNECTION: ConnectionConfig = {
   id: "",

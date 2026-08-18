@@ -43,6 +43,8 @@ impl Driver for PgDriver {
             row_edit: true,
             cancel: true,
             export: true,
+            // Tables, not a flat namespace. The keyspace commands refuse.
+            keyspace: false,
         }
     }
 

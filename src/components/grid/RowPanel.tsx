@@ -2,7 +2,14 @@ import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { EnumPicker } from "@/components/grid/EnumPicker";
 import { JsonTree } from "@/components/grid/JsonTree";
 import { parseJson } from "@/lib/utils/json";
-import { editableReason, enumValuesFor, nullableColumn } from "@/lib/utils/tabs";
+import {
+  cellEditableReason,
+  editableReason,
+  enumValuesFor,
+  isKeyspace,
+  nullableColumn,
+} from "@/lib/utils/tabs";
+import { KEY_COL } from "@/lib/utils/redis";
 import type { QueryTab } from "@/lib/types";
 import { useApp } from "@/store/app";
 
@@ -61,7 +68,17 @@ export function RowPanel({ tab }: { tab: QueryTab }) {
   const selection = tab.selection;
   const row = selection ? result?.rows[selection.row] : undefined;
   const reason = editableReason(tab);
-  const keyed = new Set((tab.columns ?? []).filter((c) => c.primaryKey).map((c) => c.name));
+  const keyspace = isKeyspace(tab.object);
+  /**
+   * Which fields carry the row's identity, marked in the gutter.
+   *
+   * On a keyspace that is the key and only the key: it *is* the identity, which
+   * is a stronger guarantee than the primary key the SQL path goes looking for,
+   * and worth the same marker.
+   */
+  const keyed = keyspace
+    ? new Set(["key"])
+    : new Set((tab.columns ?? []).filter((c) => c.primaryKey).map((c) => c.name));
 
   return (
     <aside
@@ -104,6 +121,11 @@ export function RowPanel({ tab }: { tab: QueryTab }) {
             const value = row[i];
             const editing = cellEdit?.row === selection!.row && cellEdit.col === i;
             const enumValues = enumValuesFor(tab.columns, col.name);
+            // Per field rather than per tab. On a keyspace one row holds a
+            // writable value, a writable TTL, and three facts about the key
+            // that are not fields at all, so a single answer for the whole
+            // panel would be wrong for most of it.
+            const fieldReason = cellEditableReason(tab, i);
             // A document is drawn as one whatever the column's declared type
             // says: a text column holding JSON is still JSON to the person
             // reading it.
@@ -129,6 +151,11 @@ export function RowPanel({ tab }: { tab: QueryTab }) {
                   <span className="ml-auto shrink-0 text-[10px] text-ink-faint">
                     {col.typeName}
                   </span>
+                  {/* The units the TTL field accepts, said before it is clicked
+                      into rather than in an error after it is not. */}
+                  {keyspace && i === KEY_COL.ttl && fieldReason === null && (
+                    <span className="shrink-0 text-[9px] text-ink-faint">15m · 2d · never</span>
+                  )}
                   {/* The panel is 320px. Anything that does not fit gets a way
                       out of it rather than a scrollbar to fight. */}
                   <button
@@ -163,12 +190,14 @@ export function RowPanel({ tab }: { tab: QueryTab }) {
                     </div>
                   ) : (
                     <button
-                      onClick={() => reason === null && beginEdit(tab.id, selection!.row, i, "panel")}
-                      title={reason ?? "Click to edit"}
+                      onClick={() =>
+                        fieldReason === null && beginEdit(tab.id, selection!.row, i, "panel")
+                      }
+                      title={fieldReason ?? "Click to edit"}
                       className={[
                         "flex max-h-40 w-full items-baseline gap-1 overflow-y-auto rounded px-1 py-0.5 text-left font-mono text-[12px] break-all whitespace-pre-wrap select-text",
                         value === null ? "text-null italic" : "text-ink",
-                        reason === null ? "hover:bg-hover" : "cursor-default",
+                        fieldReason === null ? "hover:bg-hover" : "cursor-default",
                       ].join(" ")}
                     >
                       <span className="min-w-0">
@@ -176,7 +205,7 @@ export function RowPanel({ tab }: { tab: QueryTab }) {
                       </span>
                       {/* The standing sign that this field is a list, visible
                           before anything is clicked. */}
-                      {enumValues && reason === null && (
+                      {enumValues && fieldReason === null && (
                         <span
                           aria-hidden="true"
                           className="ml-auto shrink-0 text-[9px] text-ink-faint"

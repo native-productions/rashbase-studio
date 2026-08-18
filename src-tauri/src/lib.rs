@@ -48,6 +48,8 @@ pub fn run() {
             commands::list_functions,
             commands::function_definition,
             commands::view_definition,
+            commands::list_keys,
+            commands::delete_keys,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Rashbase Studio");

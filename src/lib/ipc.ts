@@ -18,6 +18,8 @@ import type {
   ExportSummary,
   FunctionEntry,
   IndexInfo,
+  KeyFilter,
+  KeyPage,
   QueryResult,
   RowCount,
   RowKey,
@@ -150,4 +152,25 @@ export const ipc = {
 
   viewDefinition: (id: string, schema: string, name: string) =>
     invoke<string>("view_definition", { id, schema, name }),
+
+  /**
+   * One page of a keyspace walk.
+   *
+   * `cursor` is opaque and comes from the previous page; `0` starts. The reply
+   * says where to resume and what the page cost — a value filter is answered by
+   * reading, so a page of 12 keys can be a walk of 50,000, and the footer shows
+   * both rather than implying the whole namespace was read.
+   */
+  listKeys: (id: string, filter: KeyFilter, cursor: number, limit: number) =>
+    invoke<KeyPage>("list_keys", { id, filter, cursor, limit }),
+
+  /**
+   * Removes keys and returns how many existed.
+   *
+   * Names travel as arguments, never spliced into a command: a key is arbitrary
+   * bytes and one holding a space would break anything built by pasting names
+   * together.
+   */
+  deleteKeys: (id: string, keys: string[]) =>
+    invoke<number>("delete_keys", { id, keys }),
 };

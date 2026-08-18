@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef } from "react";
 import { FilterEditor } from "@/components/table/FilterEditor";
-import { newFilter, summarizeFilter } from "@/lib/utils/filters";
+import { newFilter, newKeyFilter, summarizeFilter } from "@/lib/utils/filters";
+import { isKeyspace } from "@/lib/utils/tabs";
+import { KEY_FILTER_COLUMNS } from "@/lib/constants/filters";
 import type { Filter, QueryTab } from "@/lib/types";
 import { useApp } from "@/store/app";
 
@@ -43,10 +45,25 @@ export function FilterBar({ tab }: { tab: QueryTab }) {
   /** `null` = editing a filter that is not on the bar yet, `undefined` = closed. */
   const openIndex = editor?.tabId === tab.id ? editor.index : undefined;
 
-  // A fresh id per opening, so React remounts the editor with a clean draft.
-  const draft = useMemo(() => newFilter(), [openIndex, tab.id]);
+  const keyspace = isKeyspace(tab.object);
 
-  const columns = tab.results[0]?.columns ?? [];
+  // A fresh id per opening, so React remounts the editor with a clean draft.
+  const draft = useMemo(
+    () => (keyspace ? newKeyFilter() : newFilter()),
+    [openIndex, tab.id, keyspace],
+  );
+
+  /**
+   * What the editor offers to filter on.
+   *
+   * A keyspace has two, and neither is a grid column: the key, which the server
+   * matches with a glob, and the value, which only a read can answer. Offering
+   * `ttl` or `size` here would be three more conditions the store cannot push
+   * anywhere.
+   */
+  const columns = keyspace
+    ? KEY_FILTER_COLUMNS.map((c) => ({ name: c.value, typeName: c.label, typeClass: "text" as const }))
+    : (tab.results[0]?.columns ?? []);
   const close = () => setFilterEditor(null);
   const open = (index: number | null) =>
     setFilterEditor(openIndex === index ? null : { tabId: tab.id, index });
@@ -103,6 +120,7 @@ export function FilterBar({ tab }: { tab: QueryTab }) {
             {openIndex === i && (
               <FilterEditor
                 columns={columns}
+                keyspace={keyspace}
                 filter={f}
                 anchorRef={anchorRef}
                 onCommit={(next) => replace(i, next)}
@@ -129,6 +147,7 @@ export function FilterBar({ tab }: { tab: QueryTab }) {
         {openIndex === null && (
           <FilterEditor
             columns={columns}
+            keyspace={keyspace}
             filter={draft}
             anchorRef={anchorRef}
             onCommit={(next) => {

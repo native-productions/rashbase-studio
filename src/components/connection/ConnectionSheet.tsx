@@ -6,15 +6,15 @@ import { useApp } from "@/store/app";
 import { ipc } from "@/lib/ipc";
 import { Select } from "@/components/ui/Select";
 import { ENVIRONMENTS } from "@/lib/constants/environments";
-import {
-  BLANK_CONNECTION,
-  BLANK_SSH,
-  SSL_MODES,
-  TUNNELLED_SSL_MODES,
-} from "@/lib/constants/connection";
+import { BLANK_CONNECTION, BLANK_SSH, DRIVERS, driverSpec } from "@/lib/constants/connection";
 import { INPUT_CLS } from "@/lib/constants/ui";
 import { asDbError } from "@/lib/utils/errors";
-import { parseConnectionString, sslModeThroughTunnel, tildePath } from "@/lib/utils/connections";
+import {
+  forDriver,
+  parseConnectionString,
+  sslModeThroughTunnel,
+  tildePath,
+} from "@/lib/utils/connections";
 import { findEnvironment } from "@/lib/utils/environments";
 import type { ConnectionConfig, SshAuth, SshConfig, SslMode } from "@/lib/types";
 
@@ -116,6 +116,35 @@ function Switch({
   );
 }
 
+/**
+ * One choice out of a handful, as one track rather than a row of buttons.
+ *
+ * Extracted because the sheet now has two of these — the driver and the
+ * environment — and two hand-rolled copies is how the second one ends up a
+ * pixel off the first. No motion: the tint flips on the same frame as the
+ * click, because a colour that fades is a control that looks like it is still
+ * deciding.
+ */
+function Segmented({
+  labelledBy,
+  options,
+  children,
+}: {
+  labelledBy: string;
+  options: { id: string }[];
+  children: (option: { id: string }, index: number) => React.ReactNode;
+}) {
+  return (
+    <div
+      role="group"
+      aria-labelledby={labelledBy}
+      className="flex h-7 items-center gap-0.5 rounded-md bg-canvas p-0.5"
+    >
+      {options.map((option, i) => children(option, i))}
+    </div>
+  );
+}
+
 /** What the two SSH methods are called where the user can see them. */
 const SSH_AUTH_LABEL: Record<SshAuth, string> = {
   key: "Private key",
@@ -141,6 +170,8 @@ export function ConnectionSheet() {
 
   const editing = !!sheet.editing;
   const ssh = form.ssh;
+  /** Everything the form varies by driver, read from one place. */
+  const spec = driverSpec(form.driver);
   /**
    * Drives the sheet's own colour, not just the label's.
    *
@@ -328,7 +359,7 @@ export function ConnectionSheet() {
             <Dialog.Title className="text-[13px] font-semibold text-ink">
               {editing ? "Edit connection" : "New connection"}
             </Dialog.Title>
-            <span className="text-[11px] text-ink-faint">PostgreSQL</span>
+            <span className="text-[11px] text-ink-faint">{spec.label}</span>
           </div>
 
           <form
@@ -349,10 +380,54 @@ export function ConnectionSheet() {
                   id="c-url"
                   value={connString}
                   onChange={(e) => applyConnString(e.target.value)}
-                  placeholder="postgresql://user:pass@host:5432/db"
+                  placeholder={
+                    spec.keyspace
+                      ? "redis://user:pass@host:6379/0"
+                      : "postgresql://user:pass@host:5432/db"
+                  }
                   spellCheck={false}
                   className={`${INPUT_CLS} font-mono text-[11px]`}
                 />
+              </Row>
+
+              {/* First, because it decides what every field under it means.
+                  Disabled while editing: a saved connection's driver is what its
+                  stored session, its derived databases, and its open tabs were
+                  all built against, and switching it in place would leave those
+                  pointing at a server that speaks a different protocol. */}
+              <Row
+                label="Driver"
+                labelId="c-driver"
+                hint={editing ? "A saved connection keeps the driver it was made with" : undefined}
+              >
+                <Segmented labelledBy="c-driver" options={DRIVERS}>
+                  {(option) => {
+                    const driver = option as (typeof DRIVERS)[number];
+                    const on = form.driver === driver.id;
+                    return (
+                      <button
+                        key={driver.id}
+                        type="button"
+                        aria-pressed={on}
+                        disabled={editing}
+                        onClick={() => setForm((f) => forDriver(f, driver.id))}
+                        className={[
+                          "flex h-6 min-w-0 flex-1 items-center justify-center rounded text-[11px]",
+                          "disabled:cursor-default",
+                          on
+                            ? "bg-field text-ink"
+                            : "text-ink-muted hover:text-ink disabled:hover:text-ink-muted",
+                          // Greyed rather than hidden when editing: the field
+                          // still answers "what is this connection", which is
+                          // worth reading even when it cannot be changed.
+                          editing && !on ? "opacity-40" : "",
+                        ].join(" ")}
+                      >
+                        {driver.label}
+                      </button>
+                    );
+                  }}
+                </Segmented>
               </Row>
 
               <Row label="Name" id="c-name">
@@ -371,16 +446,12 @@ export function ConnectionSheet() {
               {/* One track, four segments: an environment is one choice out of
                   four, and four separate buttons made it look like four. */}
               <Row label="Env" labelId="c-env">
-                <div
-                  role="group"
-                  aria-labelledby="c-env"
-                  // A raised strip on a sheet that is now the darkest surface
-                  // in the window, with the chosen segment tinted rather than
-                  // raised again: the colour is the answer here, and a second
-                  // step of lightness under it only mutes the colour.
-                  className="flex h-7 items-center gap-0.5 rounded-md bg-canvas p-0.5"
-                >
-                  {ENVIRONMENTS.map((env) => {
+                {/* The chosen segment takes the environment's own colour rather
+                    than a neutral raise. One choice out of four is worth a tint;
+                    four tints at once would be a legend, not a control. */}
+                <Segmented labelledBy="c-env" options={ENVIRONMENTS}>
+                  {(option) => {
+                    const env = option as (typeof ENVIRONMENTS)[number];
                     const on = form.environment === env.id;
                     return (
                       <button
@@ -390,10 +461,6 @@ export function ConnectionSheet() {
                         onClick={() => patch({ environment: on ? null : env.id })}
                         className={[
                           "flex h-6 min-w-0 flex-1 items-center justify-center gap-1.5 rounded text-[11px]",
-                          // The chosen segment takes the environment's own
-                          // colour rather than the neutral raise it had. One
-                          // choice out of four is worth a tint; four tints at
-                          // once would be a legend, not a control.
                           on ? env.badge : "text-ink-muted hover:text-ink",
                         ].join(" ")}
                       >
@@ -406,8 +473,8 @@ export function ConnectionSheet() {
                         <span className="truncate">{env.label}</span>
                       </button>
                     );
-                  })}
-                </div>
+                  }}
+                </Segmented>
               </Row>
 
               <GroupRule label="Server" />
@@ -432,17 +499,26 @@ export function ConnectionSheet() {
                     type="number"
                     aria-label="Port"
                     value={form.port}
-                    onChange={(e) => patch({ port: Number(e.target.value) || 5432 })}
+                    onChange={(e) => patch({ port: Number(e.target.value) || spec.port })}
                     className={`${INPUT_CLS} text-center font-mono text-[11px]`}
                   />
                 </div>
               </Row>
 
-              <Row label="User" id="c-user">
+              <Row
+                label="User"
+                id="c-user"
+                hint={
+                  spec.keyspace
+                    ? "Blank authenticates as the default account"
+                    : undefined
+                }
+              >
                 <input
                   id="c-user"
                   value={form.user}
                   onChange={(e) => patch({ user: e.target.value })}
+                  placeholder={spec.keyspace ? "default" : undefined}
                   className={INPUT_CLS}
                 />
               </Row>
@@ -473,12 +549,12 @@ export function ConnectionSheet() {
                 />
               </Row>
 
-              <Row label="Database" id="c-database" hint="Blank lists every database on the server">
+              <Row label={spec.database.label} id="c-database" hint={spec.database.hint}>
                 <input
                   id="c-database"
                   value={form.database}
                   onChange={(e) => patch({ database: e.target.value })}
-                  placeholder="Choose after connecting"
+                  placeholder={spec.database.placeholder}
                   className={INPUT_CLS}
                 />
               </Row>
@@ -486,15 +562,21 @@ export function ConnectionSheet() {
               <Row
                 label="SSL"
                 labelId="c-ssl"
-                hint={ssh ? "Verifying modes need the server's own hostname" : undefined}
+                hint={
+                  ssh && !spec.keyspace
+                    ? "Verifying modes need the server's own hostname"
+                    : undefined
+                }
               >
                 <Select
                   labelledBy="c-ssl"
                   value={form.sslMode}
-                  options={(ssh ? TUNNELLED_SSL_MODES : SSL_MODES).map((m) => ({
-                    value: m,
-                    label: m,
-                  }))}
+                  // A tunnel rules out the verifying modes for the same reason
+                  // on any driver: through it the client dials 127.0.0.1, which
+                  // is never the name on the certificate.
+                  options={spec.sslModes
+                    .filter((m) => !ssh || !m.startsWith("verify"))
+                    .map((m) => ({ value: m, label: m }))}
                   onChange={(v) => patch({ sslMode: v as SslMode })}
                 />
               </Row>

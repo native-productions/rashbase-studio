@@ -3,7 +3,8 @@
 use tauri::State;
 
 use crate::drivers::{
-    ColumnInfo, DbState, FunctionEntry, IndexInfo, RowCount, SchemaEntry, SchemaGraph, TableEntry,
+    ColumnInfo, DbState, FunctionEntry, IndexInfo, KeyFilter, KeyPage, RowCount, SchemaEntry,
+    SchemaGraph, TableEntry,
 };
 use crate::error::Result;
 
@@ -104,4 +105,33 @@ pub async fn view_definition(
     name: String,
 ) -> Result<String> {
     db.view_definition(&id, &schema, &name).await
+}
+
+/// One page of a keyspace walk.
+///
+/// `cursor` is opaque and comes back from the previous page; `0` starts. The
+/// reply says where to resume, how many keys were walked to fill it, and
+/// whether the walk came round — the last two because a value filter is
+/// answered by reading, and a page that cost 50,000 reads has to be able to say
+/// so.
+#[tauri::command]
+pub async fn list_keys(
+    db: State<'_, DbState>,
+    id: String,
+    filter: KeyFilter,
+    cursor: u64,
+    limit: usize,
+) -> Result<KeyPage> {
+    db.list_keys(&id, &filter, cursor, limit).await
+}
+
+/// Removes keys by name and reports how many existed.
+///
+/// The only other command besides `update_cell` that destroys user data. The
+/// names are passed as arguments rather than composed into a command string:
+/// a key is arbitrary bytes, and one holding a space would break anything
+/// built by pasting names together.
+#[tauri::command]
+pub async fn delete_keys(db: State<'_, DbState>, id: String, keys: Vec<String>) -> Result<u64> {
+    db.delete_keys(&id, &keys).await
 }

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { JsonTree } from "@/components/grid/JsonTree";
 import { parseJson, type JsonContainer } from "@/lib/utils/json";
-import { editableReason } from "@/lib/utils/tabs";
+import { cellEditableReason } from "@/lib/utils/tabs";
 import { useApp } from "@/store/app";
 
 /**
@@ -65,7 +65,10 @@ export function CellModal() {
     }
   }, [text, strictJson]);
 
-  const reason = tab ? editableReason(tab) : "No row selected.";
+  // Per cell, because this is the surface a hash is actually edited on: the
+  // value column of a hash key is writable here and the size column beside it
+  // is not, and one answer for the whole tab would be wrong for one of them.
+  const reason = tab && view ? cellEditableReason(tab, view.col) : "No row selected.";
   // Compared as documents, not as text. Opening a jsonb cell pretty-prints it,
   // and offering to save that would put a reformat-only write behind a button
   // the user pressed meaning "keep what I changed".

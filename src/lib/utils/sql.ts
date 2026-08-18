@@ -171,6 +171,14 @@ function condition(f: Filter, column: string, asText: boolean): string {
       return `${ref} between ${quoteLiteral(a)} and ${quoteLiteral(b)}`;
     case "notBetween":
       return `${ref} not between ${quoteLiteral(a)} and ${quoteLiteral(b)}`;
+    // Keyspace operators. They describe a glob a key-value store evaluates and
+    // are never offered against a SQL column, but the switch has to be
+    // exhaustive — and rendering them as their nearest LIKE beats returning
+    // nothing, which would silently widen the result to the whole table.
+    case "prefix":
+      return `${ref} like ${quoteLiteral(`${escapeLike(a)}%`)}`;
+    case "matches":
+      return `${ref} like ${quoteLiteral(a.replace(/\*/g, "%").replace(/\?/g, "_"))}`;
   }
 }
 

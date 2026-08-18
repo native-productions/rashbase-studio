@@ -282,6 +282,82 @@ pub struct SchemaGraph {
 }
 
 // ---------------------------------------------------------------------------
+// Keyspace
+//
+// What a key-value store has instead of tables. Nothing here is Redis-specific:
+// a keyspace is a flat namespace walked by a cursor, which is the shape every
+// store of this kind offers because it is the only one that stays cheap on a
+// namespace nobody can hold in memory.
+// ---------------------------------------------------------------------------
+
+/// One key, as the grid draws it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyEntry {
+    pub key: String,
+    /// What the store calls this key's type: "string", "hash", "list", "set",
+    /// "zset", "stream". Free-form on purpose — the frontend prints it and
+    /// decides editability from it, and inventing an enum here would mean
+    /// teaching this file every type every future store has.
+    pub kind: String,
+    /// Seconds left, `-1` for a key that never expires, `None` when the TTL was
+    /// not read. `-1` and `None` are different answers and stay tellable apart:
+    /// one means "no expiry", the other means "not asked".
+    pub ttl: Option<i64>,
+    /// Length in the unit its type counts in: bytes for a string, members for
+    /// everything else. `None` when the store would not say.
+    pub size: Option<i64>,
+    /// As much of the value as the scan was willing to read. Truncated by
+    /// design: a page of 200 keys must not drag 200 whole values across the
+    /// wire to fill a column that is 300px wide.
+    pub preview: Option<String>,
+}
+
+/// One page of a keyspace walk.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyPage {
+    pub keys: Vec<KeyEntry>,
+    /// Where to resume. Opaque to the caller; `0` is the start and is also what
+    /// the store returns once the walk has come all the way round.
+    pub cursor: u64,
+    /// How many keys were walked to produce this page.
+    ///
+    /// Not decoration. A filter the store cannot evaluate is applied here after
+    /// reading, so a page of 12 can cost a walk of 50,000, and a footer that
+    /// says "12 keys" without saying that is claiming a completeness it does
+    /// not have.
+    pub scanned: u64,
+    /// Set when the walk came round to the start, so the caller knows the page
+    /// is the last one rather than guessing from a short page. A cursor walk
+    /// may return an empty page and still have more to give.
+    pub exhausted: bool,
+    /// Total keys in the namespace, when the store can say so cheaply.
+    pub total: Option<i64>,
+}
+
+/// How a keyspace walk is narrowed.
+///
+/// Two fields because they cost differently and the caller has to be able to
+/// tell which one it is paying for. `pattern` is pushed down to the store and
+/// is nearly free; `contains` can only be answered by reading every value the
+/// walk touches.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyFilter {
+    /// Glob the store itself matches against key names. `None` means every key.
+    #[serde(default)]
+    pub pattern: Option<String>,
+    /// Text that has to appear in the value. Evaluated after reading, because
+    /// no store of this kind can answer it.
+    #[serde(default)]
+    pub contains: Option<String>,
+    /// Whether `contains` ignores case.
+    #[serde(default)]
+    pub case_sensitive: bool,
+}
+
+// ---------------------------------------------------------------------------
 // Export
 // ---------------------------------------------------------------------------
 
@@ -496,5 +572,50 @@ mod tests {
         assert_eq!(relation["refSchema"], "public");
         assert_eq!(relation["refTable"], "users");
         assert_eq!(relation["refColumns"][0], "id");
+    }
+
+    /// Same failure mode as the schema graph, one feature over: the grid reads
+    /// these names straight off the wire, and a snake_case key is not a compile
+    /// error on either side. It is a column of `undefined`.
+    #[test]
+    fn sends_a_key_page_in_the_case_the_grid_reads() {
+        let page = KeyPage {
+            keys: vec![KeyEntry {
+                key: "nvp:na:session:1".into(),
+                kind: "hash".into(),
+                ttl: Some(-1),
+                size: Some(4),
+                preview: Some("{\"name\":\"dwi\"}".into()),
+            }],
+            cursor: 4096,
+            scanned: 50_000,
+            exhausted: false,
+            total: Some(1_204_882),
+        };
+
+        let json = serde_json::to_value(&page).unwrap();
+        assert_eq!(json["cursor"], 4096);
+        assert_eq!(json["scanned"], 50_000);
+        assert_eq!(json["exhausted"], false);
+        assert_eq!(json["total"], 1_204_882);
+        assert_eq!(json["keys"][0]["key"], "nvp:na:session:1");
+        assert_eq!(json["keys"][0]["ttl"], -1);
+    }
+
+    /// A filter with nothing in it is what the frontend sends when the bar is
+    /// empty. If that stopped deserializing, opening a keyspace would fail
+    /// before it drew a single row.
+    #[test]
+    fn reads_an_empty_key_filter() {
+        let filter: KeyFilter = serde_json::from_str("{}").unwrap();
+        assert!(filter.pattern.is_none());
+        assert!(filter.contains.is_none());
+
+        // And a populated one keeps the glob exactly as typed: `nvp:na:*` is a
+        // pattern the user wrote, not one to normalise.
+        let filter: KeyFilter =
+            serde_json::from_str(r#"{"pattern":"nvp:na:*","contains":"dwi"}"#).unwrap();
+        assert_eq!(filter.pattern.as_deref(), Some("nvp:na:*"));
+        assert_eq!(filter.contains.as_deref(), Some("dwi"));
     }
 }

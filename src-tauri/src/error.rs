@@ -92,6 +92,24 @@ impl From<sqlx::Error> for Error {
     }
 }
 
+/// Redis errors carry the server's own words, like the Postgres ones do.
+///
+/// `code` is the error class Redis puts at the front of its reply — WRONGTYPE,
+/// NOAUTH, READONLY — pulled out so the UI can show it the same way it shows a
+/// Postgres SQLSTATE. There is no statement position to report: Redis rejects a
+/// command as a whole, never at a character offset.
+impl From<redis::RedisError> for Error {
+    fn from(e: redis::RedisError) -> Self {
+        Error::Db {
+            message: e.detail().unwrap_or_else(|| e.category()).to_string(),
+            code: e.code().map(str::to_string),
+            detail: None,
+            hint: None,
+            position: None,
+        }
+    }
+}
+
 impl From<keyring::Error> for Error {
     fn from(e: keyring::Error) -> Self {
         Error::Keyring(e.to_string())

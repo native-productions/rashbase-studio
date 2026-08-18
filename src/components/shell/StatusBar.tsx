@@ -1,5 +1,7 @@
 import { quoteLiteral, updatePreview } from "@/lib/utils/sql";
 import { rowKeysFor } from "@/lib/utils/rowKeys";
+import { deletePreview, stagedKeysIn } from "@/lib/utils/redis";
+import { isKeyspace } from "@/lib/utils/tabs";
 import { shortServerVersion } from "@/lib/utils/version";
 import type { QueryTab } from "@/lib/types";
 import { Spinner } from "@/components/ui/Spinner";
@@ -60,6 +62,34 @@ export function StatusBar() {
    */
   const waiting = useApp((s) => Object.values(s.busy)[0] ?? null);
   const pending = tab && cellEdit?.tabId === tab.id ? pendingWrite(tab, cellEdit) : null;
+
+  /**
+   * The staged deletion, as the command it will run.
+   *
+   * The same bargain the pending write makes, and the reason neither needs a
+   * dialog: PRODUCT.md asks that a generated write be shown before it runs, and
+   * this shows it — beside red rows the user marked one at a time — without
+   * turning ten deletions into ten modals.
+   */
+  const staged = tab && isKeyspace(tab.object) && tab.staged.length > 0 ? tab : null;
+  const stagedKeys = staged && result ? stagedKeysIn(result, new Set(staged.staged)) : [];
+
+  if (stagedKeys.length > 0) {
+    return (
+      <footer className="flex h-6 shrink-0 items-center gap-3 border-t border-danger/30 bg-danger/10 px-3 text-[11px]">
+        <span className="min-w-0 truncate font-mono text-danger select-text">
+          {deletePreview(stagedKeys)}
+        </span>
+        <span className="shrink-0 text-ink-muted">
+          {stagedKeys.length} {stagedKeys.length === 1 ? "key" : "keys"}
+        </span>
+        <span className="ml-auto shrink-0 text-ink-faint">
+          <span className="font-mono text-ink-muted">⌘S</span> delete{" "}
+          <span className="ml-2 font-mono text-ink-muted">esc</span> cancel
+        </span>
+      </footer>
+    );
+  }
 
   if (pending) {
     return (
@@ -123,7 +153,9 @@ export function StatusBar() {
           <>
             <span>{info.currentDatabase}</span>
             <span>{shortServerVersion(info.serverVersion)}</span>
-            <span title="Postgres backend process id">pid {info.backendPid}</span>
+            {info.backendPid > 0 && (
+              <span title="Server-side connection id">pid {info.backendPid}</span>
+            )}
           </>
         )}
         <button

@@ -11,9 +11,10 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::drivers::postgres::PgDriver;
+use crate::drivers::redis::RedisDriver;
 use crate::drivers::types::{
     ColumnInfo, ConnectionConfig, ConnectionInfo, DumpStats, ExportRequest, FunctionEntry,
-    IndexInfo, QueryResult, RowCount, SchemaEntry, SchemaGraph, TableEntry,
+    IndexInfo, KeyFilter, KeyPage, QueryResult, RowCount, SchemaEntry, SchemaGraph, TableEntry,
 };
 use crate::drivers::{Driver, DumpWriter, Session};
 use crate::error::{Error, Result};
@@ -48,7 +49,7 @@ impl Default for DbState {
     fn default() -> Self {
         // Written by hand rather than derived: the point of the default state
         // is the drivers that are in it.
-        let drivers: Vec<Arc<dyn Driver>> = vec![Arc::new(PgDriver)];
+        let drivers: Vec<Arc<dyn Driver>> = vec![Arc::new(PgDriver), Arc::new(RedisDriver)];
         Self {
             drivers: drivers.into_iter().map(|d| (d.id(), d)).collect(),
             sessions: RwLock::default(),
@@ -243,5 +244,19 @@ impl DbState {
 
     pub async fn view_definition(&self, id: &str, schema: &str, name: &str) -> Result<String> {
         self.session(id).await?.view_definition(schema, name).await
+    }
+
+    pub async fn list_keys(
+        &self,
+        id: &str,
+        filter: &KeyFilter,
+        cursor: u64,
+        limit: usize,
+    ) -> Result<KeyPage> {
+        self.session(id).await?.list_keys(filter, cursor, limit).await
+    }
+
+    pub async fn delete_keys(&self, id: &str, keys: &[String]) -> Result<u64> {
+        self.session(id).await?.delete_keys(keys).await
     }
 }
