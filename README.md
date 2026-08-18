@@ -52,11 +52,59 @@ design system.
   </tr>
 </table>
 
+### Redis
+
+The same grid, the same row panel, the same JSON viewer. A page of keys is
+converted into the result the grid already draws, so nothing about these
+surfaces is a second implementation.
+
+<table>
+  <tr>
+    <td colspan="2" align="center">
+      <img src="assets/screenshots/redis-row-panel.png" alt="Redis keyspace with the row panel open" width="100%">
+      <br>
+      <sub><b>Keyspace.</b> <code>key · type · ttl · size · value</code>. TTL reads as a duration, not as the <code>-1</code> Redis returns, and a hash opens in the same JSON tree a JSONB column uses.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center">
+      <img src="assets/screenshots/redis-staged-delete.png" alt="Keys staged for deletion" width="100%">
+      <br>
+      <sub><b>Staged deletion.</b> <code>Delete</code> marks a row and moves the caret on, so marking several is one gesture. The red rows and the command in the status bar are the confirmation; <code>⌘S</code> runs it, <code>Esc</code> calls it off.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="assets/screenshots/redis-value-filter.png" alt="Filtering by value contents" width="100%">
+      <br>
+      <sub><b>Honest filtering.</b> One key matched, and the footer says it walked 609 to find it. A key glob is pushed to the server; a value search is not, and hiding that would be a lie about what the page cost.</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="assets/screenshots/redis-console.png" alt="Redis command console" width="100%">
+      <br>
+      <sub><b>Command console.</b> <code>⌘T</code> on a Redis connection. One command per line, one result set each, quotes honoured the way <code>redis-cli</code> honours them.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center">
+      <img src="assets/screenshots/redis-connection.png" alt="Connection sheet set to Redis" width="100%">
+      <br>
+      <sub><b>One sheet, both drivers.</b> Picking Redis moves the port, renames <em>Database</em> to <em>DB</em>, drops the SSL modes that cannot mean anything here, and leaves everything you already typed about <em>where</em> the server is.</sub>
+    </td>
+  </tr>
+</table>
+
 ## Database support
 
 | Database | Status |
 | --- | --- |
 | PostgreSQL | Supported |
+| Redis | Supported |
+
+Redis is a key-value store, not a relational one, so it answers a different set
+of questions: a flat keyspace instead of schemas and tables, a glob instead of a
+`where` clause, and no SQL. What it does and does not do is in
+[Browsing a keyspace](#browsing-a-keyspace).
 
 Not supported yet. Each needs a driver under `src-tauri/src/drivers/`; see
 [Adding a database](#adding-a-database).
@@ -68,10 +116,11 @@ Not supported yet. Each needs a driver under `src-tauri/src/drivers/`; see
 - ClickHouse
 - DuckDB
 - MongoDB
-- Redis
 
 Postgres-wire-compatible servers (Supabase, Neon, Timescale, Yugabyte) connect
 through the PostgreSQL driver, but nothing specific to them is handled.
+Redis-protocol servers (Valkey, KeyDB, Dragonfly) connect through the Redis
+driver on the same terms.
 
 ## Install
 
@@ -172,6 +221,23 @@ bun test                   # frontend, in src/__tests__/
 cd src-tauri && cargo test # backend
 ```
 
+The Redis suite needs a real server and is skipped without one. It covers what
+unit tests cannot reach: that the cursor walk visits every key exactly once,
+that a value search matching nothing stops on its budget and reports honestly,
+that writes read back, and that a key whose name holds a space survives being
+deleted.
+
+```sh
+docker run -d -p 6379:6379 redis:7
+cd src-tauri
+RASHBASE_REDIS_HOST=127.0.0.1 cargo test --test redis_keyspace -- --nocapture
+```
+
+It seeds its own fixture, which means it starts with `FLUSHDB`. It refuses to
+run against a database holding any key it did not write, so pointing
+`RASHBASE_REDIS_DB` (default `9`) at a database with real data in it fails
+loudly instead of destroying it. `RASHBASE_REDIS_FORCE=1` says it on purpose.
+
 The performance gate needs a real Postgres and is skipped without one:
 
 ```sh
@@ -208,6 +274,7 @@ src/                     React 19 + TypeScript
   lib/ipc.ts             Typed wrappers over the Tauri command surface
   lib/constants/         Lookup tables, class strings, shared metrics
   lib/utils/             Pure functions: SQL builders, filters, row identity
+  lib/utils/redis.ts     A key page as a QueryResult, so the grid needs no changes
   lib/commands.ts        Command registry: one source for hotkeys and palette
   lib/hotkeys.ts         Single keydown listener resolving against the registry
   components/grid/       Virtualized result grid
@@ -221,6 +288,7 @@ src-tauri/src/
     types.rs             Wire types every driver speaks
     registry.rs          Driver registry and open sessions
     postgres/            The PostgreSQL driver
+    redis/               The Redis driver: keyspace walk, console, writes
   ssh.rs                 SSH tunnel, with known_hosts enforcement
   keychain.rs            OS keystore wrapper
   error.rs               One serializable error shape
@@ -282,6 +350,62 @@ there were 1,000.
 
 The editor's own text is never rewritten either way.
 
+### Browsing a keyspace
+
+Redis has no schemas, no tables, and no SQL, so the driver answers almost every
+catalogue method with the trait's refusing default. What it has instead is one
+flat namespace per numbered database, reached through two methods a relational
+driver never implements: `list_keys` and `delete_keys`.
+
+**A page of keys is a `QueryResult`.** `keyPageToResult` in
+`lib/utils/redis.ts` turns one page into the same five-column result the grid
+already draws — `key · type · ttl · size · value`. That one function is why the
+result grid, the row panel, the JSON viewer, the expanded cell editor and the
+virtualizer needed no changes to browse Redis: nothing downstream of it knows
+Redis exists.
+
+**`SCAN`, never `KEYS`.** `KEYS *` blocks the server for as long as it takes to
+walk every key, which on a production instance is a stall every other client
+shares. The walk is cursor-based and bounded, and pages the way the server
+pages — so Prev pops a stack of cursors rather than re-walking from the start.
+
+**Filters cost different amounts, and say so.** A condition on the key becomes
+the `MATCH` glob and is evaluated server-side for almost nothing. A condition on
+the value can only be answered by reading every key the walk touches. A page of
+12 keys can therefore cost a walk of 50,000, so the walk reports what it spent
+and the footer shows it: `12 keys · scanned 50,000`. Without that the footer
+would be claiming a completeness the scan never had.
+
+**The walk is budgeted.** A value search that matches nothing would otherwise
+walk ten million keys inside one IPC call and freeze the window. Hitting the
+budget is not an error: the page returns with its cursor, and Next resumes
+exactly where it stopped.
+
+**Writes are strings and hash fields.** A string is `SET ... KEEPTTL` — editing
+a value is not a decision about when it expires. A hash is written as a
+document: the JSON the row panel handed back is diffed against what is stored,
+and only the fields that actually changed move, which is what makes the existing
+JSON editor a Redis editor without it learning a single Redis command. A list,
+set, or sorted set has no single-cell equivalent, so those are read-only and say
+which gesture to use instead.
+
+**Deleting is staged, not immediate.** Select a row, press `Delete`, and it
+turns red; the status bar prints the exact command (`DEL "user:1" "user:2" …`)
+and `⌘S` runs it. The red rows plus that line are the confirmation, which is the
+same bargain the pending `UPDATE` preview makes: PRODUCT.md asks that a
+generated write be shown before it runs, and a dialog per key would make ten
+deletions ten dialogs. `Esc` clears the marks. Keys travel as arguments and are
+never spliced into a command string — a key is arbitrary bytes, and one holding
+a space breaks anything built by joining names together.
+
+**The query tab is a command console.** On a Redis connection `⌘T` opens a tab
+that takes one command per line and shapes each reply into a result set, which
+is the same thing the tab strip already does for a multi-statement SQL script.
+Quotes are honoured the way `redis-cli` honours them, so `HSET k name "Dwi
+Putra"` is four arguments and not five. Commands that never return
+(`SUBSCRIBE`, `MONITOR`, `BLPOP`) are refused by name: this driver has no
+`cancel`, so one of them would wedge the session with nothing to press.
+
 ### One connection per session, not a pool
 
 `SET`, `BEGIN`, temp tables, and `search_path` must survive between statements
@@ -299,6 +423,12 @@ resolves the secret.
 
 Connect, browse schema, run queries, read results, filter and sort a table,
 read one row in the side panel, and edit cells inline.
+
+On Redis: browse the keyspace, filter by key prefix, key glob (`nvp:na:*`) or
+value contents, read a key in the side panel with its value as a JSON tree, edit
+a string or a hash field, edit or clear a TTL, stage keys for deletion and
+commit with `⌘S`, and run raw commands in a console tab. See
+[Browsing a keyspace](#browsing-a-keyspace).
 
 A connection that names no database is treated as a server: the sidebar lists
 the databases the role can open, and picking one derives a connection named

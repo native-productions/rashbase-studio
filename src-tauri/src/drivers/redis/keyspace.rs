@@ -23,14 +23,20 @@ use crate::drivers::redis::command::from_bytes;
 use crate::drivers::types::{KeyEntry, KeyFilter, KeyPage};
 use crate::error::Result;
 
-/// Keys asked of the server per SCAN. A hint, not a promise: Redis returns
-/// roughly this many and the walk copes with any count.
+/// Keys asked of the server per SCAN while a value filter is running.
 ///
-/// Larger than the default 10 because each batch costs a round trip and the
-/// enrichment pipeline behind it; smaller than the page size so a filter that
-/// matches nothing still yields control regularly instead of arriving in one
-/// long stall.
-const SCAN_BATCH: usize = 512;
+/// A hint, not a promise: Redis returns roughly this many. Large because under
+/// a filter most of what is read is discarded, so the round trip per batch is
+/// the cost that matters rather than the rows carried.
+///
+/// Without a filter the batch is sized to what the page still needs instead —
+/// see `list_keys`. Asking for 512 to fill a page of 200 would return 512, and
+/// a page size the user chose is not a suggestion.
+const FILTER_SCAN_BATCH: usize = 512;
+
+/// Floor on the SCAN hint, so a nearly-full page does not degenerate into a
+/// round trip per key.
+const MIN_SCAN_BATCH: usize = 32;
 
 /// How many keys a single page may walk before it gives up and reports what it
 /// cost.
@@ -78,12 +84,22 @@ pub async fn list_keys(
     let mut exhausted = false;
 
     while out.len() < limit && scanned < SCAN_BUDGET {
+        // Sized to what the page still needs, so a request for 200 comes back
+        // with about 200 rather than with whatever the last batch happened to
+        // sweep up. Under a value filter the hint goes back to being large:
+        // there most of what is read is thrown away, so batching by what the
+        // page needs would be a round trip per match.
+        let batch = match folded.is_some() {
+            true => FILTER_SCAN_BATCH,
+            false => (limit - out.len()).max(MIN_SCAN_BATCH),
+        };
+
         let (next, names): (u64, Vec<Vec<u8>>) = redis::cmd("SCAN")
             .arg(cursor)
             .arg("MATCH")
             .arg(pattern)
             .arg("COUNT")
-            .arg(SCAN_BATCH)
+            .arg(batch)
             .query_async(&mut *conn)
             .await?;
 
