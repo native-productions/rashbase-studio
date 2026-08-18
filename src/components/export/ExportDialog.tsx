@@ -77,6 +77,7 @@ function Body({ connectionId, seed }: { connectionId: string; seed: string[] }) 
     format: "sql",
     mode: "full",
     dropIfExists: false,
+    safe: false,
     layout: "single",
     compress: false,
     directory: "",
@@ -379,10 +380,30 @@ function Body({ connectionId, seed }: { connectionId: string; seed: string[] }) 
               />
               <Check
                 checked={plan.effective.dropIfExists}
-                disabled={plan.modeNote !== null}
+                disabled={plan.modeNote !== null || plan.dropNote !== null}
                 onChange={(dropIfExists) => setOptions((o) => ({ ...o, dropIfExists }))}
                 label="Include DROP statements"
               />
+              {plan.dropNote && <p className="text-[11px] text-ink-faint">{plan.dropNote}</p>}
+            </Field>
+
+            {/* Its own band rather than a line under Include: what it changes
+                is not what goes into the file but whether the file can be run
+                against a database that already holds some of it. */}
+            <Field label="Restore" note={plan.safeNote}>
+              <Check
+                checked={plan.effective.safe}
+                disabled={plan.safeNote !== null}
+                onChange={(safe) => setOptions((o) => ({ ...o, safe }))}
+                label="Safe export"
+              />
+              {plan.safeNote === null && (
+                <p className="text-[11px] text-ink-faint">
+                  Creates only what is missing, brings rows it finds again up to date, and
+                  puts the constraints back at the end. One transaction: a restore that
+                  fails changes nothing.
+                </p>
+              )}
             </Field>
 
             <Field label="Output" note={plan.layoutNote}>

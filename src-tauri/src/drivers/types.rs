@@ -356,6 +356,15 @@ pub struct ExportRequest {
     pub drop_if_exists: bool,
     pub layout: ExportLayout,
     pub compress: bool,
+    /// Whether the dump is written so it can be restored more than once.
+    ///
+    /// Every statement becomes guarded — `if not exists`, `drop constraint if
+    /// exists` before each `add`, rows upserted rather than inserted — and the
+    /// whole file runs in one transaction. The point is the restore, not the
+    /// export: a dump that only loads into an empty database is a dump that
+    /// fails on the day it is actually needed.
+    #[serde(default)]
+    pub safe: bool,
     /// Chosen through the native folder picker, so it is a real path.
     pub directory: String,
     /// Without an extension. The backend appends one, because a name typed

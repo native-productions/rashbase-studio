@@ -18,6 +18,15 @@ export interface ExportOptions {
   format: ExportFormat;
   mode: ExportMode;
   dropIfExists: boolean;
+  /**
+   * Whether the dump is written so it can be restored more than once.
+   *
+   * Guarded statements throughout, rows upserted rather than inserted, and the
+   * whole file in one transaction. The point is the restore rather than the
+   * export: a dump that only loads into an empty database is a dump that fails
+   * on the day it is actually needed.
+   */
+  safe: boolean;
   layout: ExportLayout;
   compress: boolean;
   directory: string;
@@ -32,6 +41,10 @@ export interface ExportPlan {
   modeNote: string | null;
   /** Why the layout control is fixed, in the words shown under it. */
   layoutNote: string | null;
+  /** Why the safe control is off, in the words shown under it. */
+  safeNote: string | null;
+  /** Why the drop control is off, in the words shown under it. */
+  dropNote: string | null;
   /** What is appended to the typed name. `/` means a folder, not a file. */
   suffix: string;
   /** The finished name, as it will appear in the chosen folder. */
@@ -67,6 +80,9 @@ export function finalName(
  * CSV is rows and nothing else, and one table per file. Both facts are the
  * format's, not the user's, so the controls that no longer apply are held at
  * the only value that makes sense rather than being quietly ignored on send.
+ *
+ * Safe export has one of its own: it is a restore order and a transaction
+ * around it, and loose per-relation files have neither.
  */
 export function planExport(options: ExportOptions, tableCount: number): ExportPlan {
   const csv = options.format === "csv";
@@ -74,12 +90,17 @@ export function planExport(options: ExportOptions, tableCount: number): ExportPl
   // Several tables in one CSV would be several header rows glued together,
   // which no reader can take apart again.
   const forcePerTable = csv && tableCount > 1;
+  // CSV has no statements to guard, so there is nothing for safe to mean.
+  const safe = csv ? false : options.safe;
 
   const effective: ExportOptions = {
     ...options,
     mode: csv ? "data" : options.mode,
-    dropIfExists: csv ? false : options.dropIfExists,
-    layout: forcePerTable ? "per-table" : options.layout,
+    // A drop would take the target's rows with it, which is the one outcome
+    // safe mode exists to rule out.
+    dropIfExists: csv || safe ? false : options.dropIfExists,
+    safe,
+    layout: safe ? "single" : forcePerTable ? "per-table" : options.layout,
   };
 
   const stem = options.fileName.trim();
@@ -88,7 +109,13 @@ export function planExport(options: ExportOptions, tableCount: number): ExportPl
   return {
     effective,
     modeNote: csv ? "CSV carries rows only." : null,
-    layoutNote: forcePerTable ? "CSV holds one table per file." : null,
+    layoutNote: forcePerTable
+      ? "CSV holds one table per file."
+      : safe
+        ? "A safe export is one file, in restore order."
+        : null,
+    safeNote: csv ? "Safe export applies to SQL." : null,
+    dropNote: !csv && safe ? "A safe export never drops what is already there." : null,
     suffix: effective.layout === "per-table" && !effective.compress ? "/" : name.slice(stem.length),
     finalName: name,
   };

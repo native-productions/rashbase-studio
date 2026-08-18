@@ -232,6 +232,8 @@ export interface ExportRequest {
   format: ExportFormat;
   mode: ExportMode;
   dropIfExists: boolean;
+  /** Whether the dump is written so it can be restored more than once. */
+  safe: boolean;
   layout: ExportLayout;
   compress: boolean;
   /** From the native folder picker, so it is a real path. */

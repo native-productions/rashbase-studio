@@ -56,6 +56,14 @@ create table rashbase_export.child (
     constraint child_qty_positive check (qty > 0)
 );
 
+-- Never exported, and pointing at the parent's key on purpose: it is what
+-- holds that key down, so a safe restore that dropped keys to re-add them
+-- would fail here and nowhere else.
+create table rashbase_export.outsider (
+    id integer primary key,
+    parent_id integer not null references rashbase_export.parent(id)
+);
+
 create index child_email_idx on rashbase_export.child (email);
 comment on table rashbase_export.child is 'rows that go out';
 comment on column rashbase_export.child.email is 'contact';
@@ -137,6 +145,7 @@ fn request(objects: Vec<ObjectRef>, format: ExportFormat, mode: ExportMode) -> E
         format,
         mode,
         drop_if_exists: false,
+        safe: false,
         layout: ExportLayout::Single,
         compress: false,
         directory: String::new(),
@@ -339,6 +348,154 @@ async fn a_dump_restores_into_an_empty_database() {
     let mut req = request(objects, ExportFormat::Csv, ExportMode::Data);
     req.layout = ExportLayout::Single;
     assert!(db.export(id, "job-bad", &req, &mut refused).await.is_err());
+
+    // ---- Safe -------------------------------------------------------------
+    //
+    // The restore above answers "does this load into an empty database". Safe
+    // mode answers the question that actually bites: does it load into a
+    // database that already holds some of it, and does it load twice. Run here,
+    // against the schema the restore just rebuilt, because "already holds some
+    // of it" is exactly the state that has to be exercised.
+
+    let mut safe = Buffer::default();
+    let mut req = request(
+        vec![
+            object("child", "table"),
+            object("parent", "table"),
+            object("summary", "view"),
+        ],
+        ExportFormat::Sql,
+        ExportMode::Full,
+    );
+    req.safe = true;
+    db.export(id, "job-safe", &req, &mut safe).await.unwrap();
+    let safe_sql = safe.only();
+    if std::env::var("RASHBASE_DUMP_DEBUG").is_ok() {
+        eprintln!("{safe_sql}");
+    }
+
+    // Every guard, each of which is a different sentence a restore stops on.
+    assert!(safe_sql.contains("CREATE SCHEMA IF NOT EXISTS \"rashbase_export\";"));
+    assert!(safe_sql.contains("IF to_regtype('\"rashbase_export\".\"mood\"') IS NULL THEN"));
+    assert!(safe_sql.contains("CREATE TABLE IF NOT EXISTS \"rashbase_export\".\"child\""));
+    assert!(safe_sql.contains("ADD COLUMN IF NOT EXISTS"));
+    assert!(safe_sql.contains("CREATE SEQUENCE IF NOT EXISTS"));
+    assert!(safe_sql.contains("CREATE OR REPLACE VIEW"));
+    assert!(safe_sql.contains("DROP CONSTRAINT IF EXISTS \"child_parent_id_fkey\""));
+    assert!(safe_sql.contains("ON CONFLICT (\"id\") DO UPDATE SET"));
+    assert!(safe_sql.contains("CREATE INDEX IF NOT EXISTS child_email_idx"));
+    assert!(safe_sql.contains("WHERE to_regclass("));
+    assert!(safe_sql.contains("\nBEGIN;\n"));
+    assert!(safe_sql.trim_end().ends_with("COMMIT;"));
+
+    // The upsert names the primary key as its conflict target, so the key has
+    // to be in place by the time the first row arrives. This is the one
+    // constraint that cannot wait until the end.
+    let parent_pk = safe_sql
+        .find("\"parent\" ADD CONSTRAINT \"parent_pkey\"")
+        .expect("the parent's primary key");
+    let first_row = safe_sql.find("INSERT INTO").expect("a row");
+    let fk = safe_sql.find("FOREIGN KEY").expect("a foreign key");
+    assert!(parent_pk < first_row, "the upsert has no key to aim at");
+    assert!(first_row < fk, "the foreign key was written before the rows");
+
+    // A key the export knows nothing about is pointing at the parent's, so the
+    // parent's key is read for rather than replaced.
+    assert!(!safe_sql.contains("DROP CONSTRAINT IF EXISTS \"parent_pkey\""));
+    assert!(safe_sql.contains("SELECT 1 FROM pg_catalog.pg_constraint"));
+
+    // Into a database that already holds all of it. An ordinary dump stops on
+    // the first `create type`; this one has to run to the end.
+    db.execute(id, &safe_sql, None)
+        .await
+        .unwrap_or_else(|e| panic!("the safe dump did not restore over itself: {e:?}"));
+    // And again, because "twice" is what re-runnable means.
+    db.execute(id, &safe_sql, None)
+        .await
+        .unwrap_or_else(|e| panic!("the safe dump did not restore twice: {e:?}"));
+
+    // No duplicates: every row conflicted with itself and was updated in place.
+    assert_eq!(
+        scalar(&db, id, "select count(*)::text from rashbase_export.child").await,
+        Some("2".to_string())
+    );
+
+    // A row that has drifted since the dump is brought back to what the dump
+    // carries, which is the half of the upsert `do nothing` would not give.
+    db.execute(
+        id,
+        "update rashbase_export.child set email = 'drifted' where id = 1;",
+        None,
+    )
+    .await
+    .unwrap();
+    db.execute(id, &safe_sql, None).await.unwrap();
+    assert_eq!(
+        scalar(
+            &db,
+            id,
+            "select email from rashbase_export.child where id = 1"
+        )
+        .await,
+        before_email
+    );
+
+    // A table that is there but short a column: `create table if not exists`
+    // alone would skip straight past it and fail on the first insert instead.
+    db.execute(id, "alter table rashbase_export.child drop column tags;", None)
+        .await
+        .unwrap();
+    db.execute(id, &safe_sql, None)
+        .await
+        .unwrap_or_else(|e| panic!("a missing column was not reconciled: {e:?}"));
+    assert_eq!(
+        scalar(
+            &db,
+            id,
+            "select tags::text from rashbase_export.child where id = 1"
+        )
+        .await,
+        Some("{x,y}".to_string())
+    );
+
+    // Rows only, into a schema that already has the foreign keys, with the
+    // child named before the parent it points at. Without the prologue taking
+    // the key off first this is the restore that fails on
+    // `insert or update on table "child" violates foreign key constraint`.
+    let mut rows_only = Buffer::default();
+    let mut req = request(
+        vec![object("child", "table"), object("parent", "table")],
+        ExportFormat::Sql,
+        ExportMode::Data,
+    );
+    req.safe = true;
+    db.export(id, "job-safe-data", &req, &mut rows_only)
+        .await
+        .unwrap();
+    let rows_only = rows_only.only();
+    assert!(!rows_only.contains("CREATE TABLE"));
+    assert!(rows_only.contains("DROP CONSTRAINT IF EXISTS \"child_parent_id_fkey\""));
+    db.execute(id, &rows_only, None)
+        .await
+        .unwrap_or_else(|e| panic!("a data-only safe restore did not land: {e:?}"));
+
+    // And the constraints the prologue took off are back on.
+    assert!(db
+        .execute(
+            id,
+            "insert into rashbase_export.child (parent_id, qty) values (1, 0);",
+            None
+        )
+        .await
+        .is_err());
+    assert!(db
+        .execute(
+            id,
+            "insert into rashbase_export.child (parent_id, qty) values (999, 1);",
+            None
+        )
+        .await
+        .is_err());
 
     // ---- The restore ------------------------------------------------------
 

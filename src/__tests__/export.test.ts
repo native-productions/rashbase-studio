@@ -14,6 +14,7 @@ const OPTIONS: ExportOptions = {
   format: "sql",
   mode: "full",
   dropIfExists: false,
+  safe: false,
   layout: "single",
   compress: false,
   directory: "/tmp",
@@ -106,6 +107,33 @@ test("several tables as CSV is forced to one file each", () => {
   const single = planExport({ ...OPTIONS, format: "csv" }, 1);
   expect(single.effective.layout).toBe("single");
   expect(single.layoutNote).toBeNull();
+});
+
+test("a safe export is held to one file, and says why", () => {
+  // Loose per-relation files have no restore order and no transaction around
+  // them, which is the whole of what safe mode is buying.
+  const plan = planExport({ ...OPTIONS, safe: true, layout: "per-table" }, 4);
+  expect(plan.effective.layout).toBe("single");
+  expect(plan.layoutNote).toBe("A safe export is one file, in restore order.");
+  expect(plan.suffix).toBe(".sql");
+});
+
+test("a safe export never drops what it is restoring over", () => {
+  // The drop would take the target's rows with it, which is the one outcome
+  // the mode exists to rule out.
+  const plan = planExport({ ...OPTIONS, safe: true, dropIfExists: true }, 2);
+  expect(plan.effective.dropIfExists).toBe(false);
+  expect(plan.dropNote).toBe("A safe export never drops what is already there.");
+});
+
+test("CSV has no statements to guard, so safe is held off", () => {
+  const plan = planExport({ ...OPTIONS, format: "csv", safe: true }, 1);
+  expect(plan.effective.safe).toBe(false);
+  expect(plan.safeNote).toBe("Safe export applies to SQL.");
+  // And CSV's own rule still decides the layout.
+  expect(planExport({ ...OPTIONS, format: "csv", safe: true }, 3).effective.layout).toBe(
+    "per-table",
+  );
 });
 
 test("the suffix shown beside the name is the one that gets appended", () => {

@@ -73,6 +73,49 @@ Not supported yet. Each needs a driver under `src-tauri/src/drivers/`; see
 Postgres-wire-compatible servers (Supabase, Neon, Timescale, Yugabyte) connect
 through the PostgreSQL driver, but nothing specific to them is handled.
 
+## Install
+
+Prebuilt installers for every tagged release are on the
+[releases page](https://github.com/native-productions/rashbase-studio/releases).
+The scripts below pick the right artifact for your platform and install it.
+
+**macOS and Linux**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/native-productions/rashbase-studio/main/scripts/install.sh | bash
+```
+
+macOS gets the `.dmg` for your architecture copied into `/Applications`. Linux
+gets the `.deb` or `.rpm` if your distro uses one, and the `.AppImage`
+otherwise.
+
+**Windows**
+
+```powershell
+irm https://raw.githubusercontent.com/native-productions/rashbase-studio/main/scripts/install.ps1 | iex
+```
+
+Runs the NSIS installer. Pass `-Installer msi` to the script for the MSI
+instead.
+
+### These builds are not signed
+
+There is no Apple Developer or Windows code-signing certificate yet, so both
+operating systems warn you the first time you open the app. The install scripts
+above handle macOS for you. If you downloaded an installer by hand instead:
+
+- **macOS** quarantines the app and refuses to launch it ("damaged and can't be
+  opened"). Clear the flag once, after moving the app into `/Applications`:
+
+  ```sh
+  xattr -dr com.apple.quarantine "/Applications/Rashbase Studio.app"
+  ```
+
+- **Windows** shows a SmartScreen prompt ("Windows protected your PC"). Click
+  **More info**, then **Run anyway**.
+
+- **Linux** does not warn; there is nothing to do.
+
 ## Requirements
 
 - [Bun](https://bun.sh)
@@ -91,6 +134,19 @@ bun run tauri dev
 ```sh
 bun run tauri build
 ```
+
+## Releasing
+
+```sh
+./scripts/release.sh 0.2.0            # bump, commit, tag, push
+./scripts/release.sh 0.2.0 --dry-run  # show the bump without committing
+```
+
+The script bumps the version in `package.json`, `src-tauri/tauri.conf.json` and
+`src-tauri/Cargo.toml`, then pushes a `v0.2.0` tag. The
+[release workflow](.github/workflows/release.yml) builds macOS (arm64 and
+x86_64), Windows and Linux artifacts on that tag and attaches them to a **draft**
+release. Review the draft on GitHub, then publish it.
 
 ## Tests
 

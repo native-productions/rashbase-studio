@@ -201,6 +201,79 @@ async fn indexes(conn: &mut PgConnection, schema: &str, table: &str) -> Result<V
         .collect()
 }
 
+/// The columns of the relation's primary key, in key order.
+///
+/// The conflict target of a safe export's upsert. Read from `pg_index` rather
+/// than parsed out of `pg_get_constraintdef`, because "the text between the
+/// parentheses" stops being the column list the moment a key is on an
+/// expression or an identifier holds a comma.
+async fn primary_key_columns(
+    conn: &mut PgConnection,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<String>> {
+    let rows = sqlx::query(
+        r#"
+        select a.attname
+        from pg_catalog.pg_index i
+        join pg_catalog.pg_class c on c.oid = i.indrelid
+        join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+        join pg_catalog.pg_attribute a
+          on a.attrelid = c.oid and a.attnum = any(i.indkey)
+        where n.nspname = $1
+          and c.relname = $2
+          and i.indisprimary
+        order by array_position(i.indkey, a.attnum)
+        "#,
+    )
+    .bind(schema)
+    .bind(table)
+    .fetch_all(&mut *conn)
+    .await?;
+    rows.into_iter()
+        .map(|r| Ok(r.try_get::<String, _>(0)?))
+        .collect()
+}
+
+/// Extensions that own a type one of the relation's columns uses.
+///
+/// A `citext` column restores into `type "citext" does not exist` on a database
+/// where nobody happened to have run `create extension` first, and that reads as
+/// the dump being wrong rather than the target being short of a package.
+///
+/// Types only. An extension reached solely through a function called in a
+/// default would need the default parsed, and a wrong guess here writes a
+/// `create extension` the target may not have available to install.
+async fn extensions(conn: &mut PgConnection, schema: &str, table: &str) -> Result<Vec<String>> {
+    let rows = sqlx::query(
+        r#"
+        select distinct e.extname
+        from pg_catalog.pg_attribute a
+        join pg_catalog.pg_class c on c.oid = a.attrelid
+        join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+        join pg_catalog.pg_type t on t.oid = a.atttypid
+        join pg_catalog.pg_depend d
+              -- An array type belongs to whatever owns its element type.
+          on d.objid = case when t.typelem <> 0 and t.typlen = -1 then t.typelem else t.oid end
+         and d.classid = 'pg_catalog.pg_type'::regclass
+         and d.deptype = 'e'
+        join pg_catalog.pg_extension e on e.oid = d.refobjid
+        where n.nspname = $1
+          and c.relname = $2
+          and a.attnum > 0
+          and not a.attisdropped
+        order by 1
+        "#,
+    )
+    .bind(schema)
+    .bind(table)
+    .fetch_all(&mut *conn)
+    .await?;
+    rows.into_iter()
+        .map(|r| Ok(r.try_get::<String, _>(0)?))
+        .collect()
+}
+
 /// An enum type one of the dumped relations depends on.
 struct EnumType {
     schema: String,
@@ -414,17 +487,56 @@ async fn view_body(conn: &mut PgConnection, schema: &str, name: &str) -> Result<
 // ---------------------------------------------------------------------------
 
 /// The `create table` body. The one definition Postgres will not print for us.
-pub fn create_table(schema: &str, table: &str, cols: &[DumpColumn]) -> String {
+///
+/// `safe` adds `if not exists`, which is what lets the same file be run against
+/// a database that already has the table without the restore stopping on the
+/// first relation it recognises.
+pub fn create_table(schema: &str, table: &str, cols: &[DumpColumn], safe: bool) -> String {
     let body = cols
         .iter()
         .map(column_clause)
         .collect::<Vec<_>>()
         .join(",\n");
     format!(
-        "CREATE TABLE {} (\n{}\n);\n",
+        "CREATE TABLE {}{} (\n{}\n);\n",
+        if safe { "IF NOT EXISTS " } else { "" },
         qualified(schema, table),
         body
     )
+}
+
+/// Brings a table that already exists up to the columns this dump knows about.
+///
+/// `create table if not exists` on its own is a lie by omission: it succeeds
+/// against a table missing half the columns, and the failure surfaces later as
+/// `column "nickname" of relation "users" does not exist` on an `insert` nobody
+/// can read. One guarded `add column` per column closes that gap.
+///
+/// Only ever *adds*. A column whose type has drifted is a migration, and
+/// guessing at an `alter column type` is how an export starts destroying data.
+pub fn add_columns(schema: &str, table: &str, cols: &[DumpColumn]) -> String {
+    let target = qualified(schema, table);
+    let mut out = String::new();
+    for c in cols {
+        let clause = column_clause(c);
+        let clause = clause.trim_start();
+        // `not null` with nothing to fill the existing rows with is rejected
+        // outright, and a restore that stops here has reconciled nothing. The
+        // column arrives nullable and the file says so, which is the difference
+        // between a dump that lands and a dump that argues.
+        let (clause, note) = if c.not_null && c.default.is_none() && c.identity.is_empty() {
+            (
+                clause.trim_end().trim_end_matches(" NOT NULL"),
+                "  -- nullable here: existing rows have nothing to fill it with\n",
+            )
+        } else {
+            (clause, "")
+        };
+        out.push_str(&format!(
+            "ALTER TABLE {target} ADD COLUMN IF NOT EXISTS {clause};\n{note}"
+        ));
+    }
+    out
 }
 
 /// One column of a `create table`.
@@ -471,7 +583,12 @@ pub fn drop_statement(schema: &str, name: &str, kind: &str) -> String {
 /// server's own rendering of the value and SQL NULL comes out as the keyword
 /// rather than the string. Generated columns are left out because they cannot
 /// be written; an identity column declared `always` needs the insert to say so.
-pub fn insert_select(schema: &str, table: &str, cols: &[DumpColumn]) -> String {
+pub fn insert_select(
+    schema: &str,
+    table: &str,
+    cols: &[DumpColumn],
+    conflict: Option<&[String]>,
+) -> String {
     let target = qualified(schema, table);
     let writable: Vec<&DumpColumn> = cols.iter().filter(|c| c.writable()).collect();
 
@@ -495,13 +612,55 @@ pub fn insert_select(schema: &str, table: &str, cols: &[DumpColumn]) -> String {
     };
 
     let prefix = format!("INSERT INTO {target} ({names}){overriding} VALUES (");
+    let suffix = match conflict {
+        None => ");".to_string(),
+        Some(key) => format!(") {};", on_conflict(key, &writable)),
+    };
     format!(
         "select {} || concat_ws(', ', {}) || {} from {}",
         sql_literal(&prefix),
         values,
-        sql_literal(");"),
+        sql_literal(&suffix),
         target
     )
+}
+
+/// What a safe export does when the row is already there.
+///
+/// The whole point of the mode: a second run of the same file has to converge
+/// rather than stop on `duplicate key value violates unique constraint`. With a
+/// primary key to aim at, the row is updated to what the dump carries; without
+/// one there is nothing to name as the conflict target, so the row is skipped
+/// and the statement still succeeds.
+///
+/// An `always` identity is left out of the update: it refuses to be assigned,
+/// and `overriding system value` is an `insert` clause with no `update` half.
+fn on_conflict(key: &[String], writable: &[&DumpColumn]) -> String {
+    if key.is_empty() {
+        return "ON CONFLICT DO NOTHING".to_string();
+    }
+
+    let target = key
+        .iter()
+        .map(|k| quote_ident(k))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let updates: Vec<String> = writable
+        .iter()
+        .filter(|c| c.identity != "a" && !key.iter().any(|k| k == &c.name))
+        .map(|c| {
+            let name = quote_ident(&c.name);
+            format!("{name} = EXCLUDED.{name}")
+        })
+        .collect();
+
+    // Every column is part of the key, so an update would set nothing and
+    // Postgres rejects an empty `set` list.
+    if updates.is_empty() {
+        return format!("ON CONFLICT ({target}) DO NOTHING");
+    }
+    format!("ON CONFLICT ({target}) DO UPDATE SET {}", updates.join(", "))
 }
 
 /// The `copy` that streams a table out as CSV, header row included.
@@ -512,23 +671,119 @@ pub fn copy_csv(schema: &str, table: &str) -> String {
     )
 }
 
-fn create_enum(t: &EnumType) -> String {
+/// A statement that adds a constraint, and in safe mode removes the one already
+/// wearing its name first.
+///
+/// `add constraint` has no `if not exists`, so a second run of a dump that
+/// carries one stops on `constraint "orders_total_check" already exists`.
+/// Dropping by name first is both the guard and the reconcile: a constraint
+/// whose definition has drifted comes back as the definition the dump carries.
+///
+/// Only for the kinds nothing else can be built on — checks and foreign keys.
+/// See `guarded_constraint` for the two that can.
+pub fn constraint_statement(target: &str, name: &str, definition: &str, safe: bool) -> String {
+    let name = quote_ident(name);
+    let drop = if safe {
+        format!("ALTER TABLE {target} DROP CONSTRAINT IF EXISTS {name};\n")
+    } else {
+        String::new()
+    };
+    format!("{drop}ALTER TABLE {target} ADD CONSTRAINT {name} {definition};\n")
+}
+
+/// Adds a key only if the table has not got one by that name already.
+///
+/// Primary and unique keys are the two a foreign key can point at, and the
+/// pointer may come from a table nobody selected for this export. Dropping one
+/// to re-add it would fail on `cannot drop constraint ... because other objects
+/// depend on it`, which turns the safe mode into the least safe one there is.
+/// So it is read first and left alone if it is there.
+///
+/// The cost is that a key whose definition has drifted is not reconciled. That
+/// is the right trade: a wrong key is a schema the user has to look at, an
+/// aborted restore is one they cannot get past.
+pub fn guarded_constraint(target: &str, name: &str, definition: &str) -> String {
+    format!(
+        "DO $$ BEGIN\n    \
+         IF NOT EXISTS (\n        \
+             SELECT 1 FROM pg_catalog.pg_constraint\n         \
+             WHERE conrelid = {}::regclass AND conname = {}\n    \
+         ) THEN\n        \
+         ALTER TABLE {target} ADD CONSTRAINT {} {definition};\n    \
+         END IF;\nEND $$;\n",
+        sql_literal(target),
+        sql_literal(name),
+        quote_ident(name),
+    )
+}
+
+/// Removes a constraint if it is there at all, on a table that may not be.
+///
+/// The prologue of a safe export. Both guards are needed and for different
+/// reasons: `alter table if exists` because a structure restore has not created
+/// the table yet, `drop constraint if exists` because a data-only restore into
+/// a database that never had the constraint is not an error worth stopping for.
+pub fn drop_constraint_statement(target: &str, name: &str) -> String {
+    format!(
+        "ALTER TABLE IF EXISTS {target} DROP CONSTRAINT IF EXISTS {};\n",
+        quote_ident(name)
+    )
+}
+
+/// The server's own `create index` with the guard wedged in.
+///
+/// String surgery on generated SQL is usually the wrong instinct. It is honest
+/// here because `pg_get_indexdef` has exactly two shapes and both start with a
+/// fixed keyword sequence — there is no index whose definition begins with
+/// anything else.
+pub fn guarded_index(definition: &str) -> String {
+    for prefix in ["CREATE UNIQUE INDEX ", "CREATE INDEX "] {
+        if let Some(rest) = definition.strip_prefix(prefix) {
+            return format!("{prefix}IF NOT EXISTS {rest}");
+        }
+    }
+    definition.to_string()
+}
+
+/// The enum, and in safe mode the labels it may be short of.
+///
+/// `create type` has no `if not exists`, so the guard has to be a `do` block
+/// reading the catalogue. `to_regtype` answers with NULL rather than raising
+/// when the type is absent, which is the whole reason it can be asked at all.
+///
+/// The `add value` lines exist because a type that is already there is not
+/// necessarily the same type: a label added since the last export would
+/// otherwise make every row carrying it fail on `invalid input value for enum`.
+fn create_enum(t: &EnumType, safe: bool) -> String {
     let labels = t
         .labels
         .iter()
         .map(|l| sql_literal(l))
         .collect::<Vec<_>>()
         .join(", ");
-    format!(
-        "CREATE TYPE {} AS ENUM ({});\n",
-        qualified(&t.schema, &t.name),
-        labels
-    )
+    let name = qualified(&t.schema, &t.name);
+
+    if !safe {
+        return format!("CREATE TYPE {name} AS ENUM ({labels});\n");
+    }
+
+    let mut out = format!(
+        "DO $$ BEGIN\n    IF to_regtype({}) IS NULL THEN\n        CREATE TYPE {name} AS ENUM ({labels});\n    END IF;\nEND $$;\n",
+        sql_literal(&name)
+    );
+    for label in &t.labels {
+        out.push_str(&format!(
+            "ALTER TYPE {name} ADD VALUE IF NOT EXISTS {};\n",
+            sql_literal(label)
+        ));
+    }
+    out
 }
 
-fn create_sequence(s: &Sequence) -> String {
+fn create_sequence(s: &Sequence, safe: bool) -> String {
     format!(
-        "CREATE SEQUENCE {} AS {} INCREMENT BY {} MINVALUE {} MAXVALUE {} START WITH {}{};\n",
+        "CREATE SEQUENCE {}{} AS {} INCREMENT BY {} MINVALUE {} MAXVALUE {} START WITH {}{};\n",
+        if safe { "IF NOT EXISTS " } else { "" },
         qualified(&s.schema, &s.name),
         s.data_type,
         s.increment,
@@ -562,6 +817,15 @@ pub async fn run(
 ) -> Result<DumpStats> {
     if req.objects.is_empty() {
         return Err(Error::other("Nothing was selected to export."));
+    }
+
+    // What safe mode sells is a restore order and one transaction around it.
+    // Loose per-relation files have neither: whoever runs them chooses the
+    // order, and a failure in the fourth file leaves the first three applied.
+    if req.safe && req.layout == ExportLayout::PerTable {
+        return Err(Error::other(
+            "A safe export is written as one file, in restore order.",
+        ));
     }
 
     match req.format {
@@ -621,6 +885,7 @@ async fn sql(
     let (database, version) = server(conn).await?;
     let total = req.objects.len();
     let mut stats = DumpStats::default();
+    let safe = req.safe;
 
     match req.layout {
         // One file, in restore order across the whole set: every definition
@@ -629,23 +894,52 @@ async fn sql(
         // at all — a foreign key never lands before the table it points at.
         ExportLayout::Single => {
             out.begin(&req.file_name)?;
-            preamble(out, &database, &version)?;
+            preamble(out, &database, &version, safe)?;
+
+            if safe {
+                // Schemas, extensions, and enum labels, before the transaction
+                // opens: `alter type ... add value` cannot add a label and have
+                // it used by the same transaction, and every row carrying a new
+                // label is in this file.
+                preflight(conn, req, out).await?;
+                put!(out, "BEGIN;\n\n");
+
+                // Whatever would stand between the rows and the table they go
+                // in. Removed first and restored at the end, which is the only
+                // order that works when the target already holds the schema.
+                put!(out, "-- constraints, taken off until the rows are in\n");
+                for object in &req.objects {
+                    stopped(cancel)?;
+                    drop_constraints(conn, object, out).await?;
+                }
+                put!(out, "\n");
+            }
 
             if req.mode.structure() {
                 let mut seen = HashSet::new();
                 for object in &req.objects {
-                    types_and_sequences(conn, object, out, &mut seen).await?;
+                    types_and_sequences(conn, object, out, &mut seen, safe).await?;
                 }
                 for object in &req.objects {
                     stopped(cancel)?;
                     structure(conn, object, req, out).await?;
+                }
+
+                // A safe export upserts, and `on conflict (id)` needs the key
+                // it names to exist by the time the first row arrives. The
+                // primary key is the one constraint that cannot wait.
+                if safe {
+                    for object in &req.objects {
+                        stopped(cancel)?;
+                        add_constraints(conn, object, out, &["p"], safe).await?;
+                    }
                 }
             }
 
             if req.mode.data() {
                 for (i, object) in req.objects.iter().enumerate() {
                     out.progress(&object.name, i, total);
-                    stats.rows += data(conn, object, out, cancel).await?;
+                    stats.rows += data(conn, object, out, cancel, safe).await?;
                 }
             }
 
@@ -657,18 +951,36 @@ async fn sql(
                 // what orders the file, never the selection.
                 for object in &req.objects {
                     stopped(cancel)?;
-                    keys_and_indexes(conn, object, out).await?;
+                    keys_and_indexes(conn, object, out, safe).await?;
                 }
+            } else if safe {
+                // Rows only, so nothing above created these. The prologue still
+                // took them off, and a restore that leaves a table with fewer
+                // constraints than it started with is not safe by any reading.
                 for object in &req.objects {
                     stopped(cancel)?;
-                    foreign_keys(conn, object, out).await?;
+                    add_constraints(conn, object, out, &["c"], safe).await?;
+                }
+            }
+
+            if req.mode.structure() || safe {
+                for object in &req.objects {
+                    stopped(cancel)?;
+                    foreign_keys(conn, object, out, safe).await?;
                 }
             }
 
             if req.mode.data() {
                 for object in &req.objects {
-                    sequence_values(conn, object, out).await?;
+                    sequence_values(conn, object, out, safe).await?;
                 }
+            }
+
+            if safe {
+                // All of it or none of it. A restore that fails halfway leaves
+                // the target exactly as it was, which is what makes trying one
+                // a decision the user can take back.
+                put!(out, "\nCOMMIT;\n");
             }
 
             stats.tables = req.objects.len();
@@ -682,22 +994,22 @@ async fn sql(
                 stopped(cancel)?;
                 out.progress(&object.name, i, total);
                 out.begin(&format!("{}.{}", object.schema, object.name))?;
-                preamble(out, &database, &version)?;
+                preamble(out, &database, &version, false)?;
 
                 if req.mode.structure() {
                     let mut seen = HashSet::new();
-                    types_and_sequences(conn, object, out, &mut seen).await?;
+                    types_and_sequences(conn, object, out, &mut seen, false).await?;
                     structure(conn, object, req, out).await?;
                 }
                 if req.mode.data() {
-                    stats.rows += data(conn, object, out, cancel).await?;
+                    stats.rows += data(conn, object, out, cancel, false).await?;
                 }
                 if req.mode.structure() {
-                    keys_and_indexes(conn, object, out).await?;
-                    foreign_keys(conn, object, out).await?;
+                    keys_and_indexes(conn, object, out, false).await?;
+                    foreign_keys(conn, object, out, false).await?;
                 }
                 if req.mode.data() {
-                    sequence_values(conn, object, out).await?;
+                    sequence_values(conn, object, out, false).await?;
                 }
                 stats.tables += 1;
             }
@@ -720,10 +1032,22 @@ async fn server(conn: &mut PgConnection) -> Result<(String, String)> {
 /// `standard_conforming_strings` is the one that matters: `quote_nullable`
 /// produced these literals under it, and restoring with it off would reinterpret
 /// every backslash in the file.
-fn preamble(out: &mut dyn DumpWriter, database: &str, version: &str) -> Result<()> {
-    put!(out, "-- Rashbase Studio dump\n");
+fn preamble(
+    out: &mut dyn DumpWriter,
+    database: &str,
+    version: &str,
+    safe: bool,
+) -> Result<()> {
+    put!(out, "-- Rashbase Studio dump{}\n", if safe { " (safe)" } else { "" });
     put!(out, "-- database: {database}\n");
-    put!(out, "-- server:   {version}\n\n");
+    put!(out, "-- server:   {version}\n");
+    if safe {
+        put!(out, "--\n");
+        put!(out, "-- Safe: this file can be restored into an empty database, into a\n");
+        put!(out, "-- database that already holds some of it, or twice in a row. It runs\n");
+        put!(out, "-- in one transaction: if any statement fails, nothing is applied.\n");
+    }
+    put!(out, "\n");
     put!(out, "SET statement_timeout = 0;\n");
     put!(out, "SET client_encoding = 'UTF8';\n");
     put!(out, "SET standard_conforming_strings = on;\n");
@@ -732,28 +1056,89 @@ fn preamble(out: &mut dyn DumpWriter, database: &str, version: &str) -> Result<(
     Ok(())
 }
 
+/// What a safe restore needs in place before the transaction can even start.
+///
+/// Schemas and extensions because a relation cannot be created in a schema that
+/// is not there and a `citext` column cannot be created at all without the
+/// extension behind it. Enums because `alter type ... add value` is the one
+/// statement here that a transaction block will not let the same transaction
+/// use — a label added and then written to would fail on `unsafe use of new
+/// value of enum type`.
+async fn preflight(
+    conn: &mut PgConnection,
+    req: &ExportRequest,
+    out: &mut dyn DumpWriter,
+) -> Result<()> {
+    let mut seen = HashSet::new();
+
+    for object in &req.objects {
+        if seen.insert(format!("schema:{}", object.schema)) {
+            put!(
+                out,
+                "CREATE SCHEMA IF NOT EXISTS {};\n",
+                quote_ident(&object.schema)
+            );
+        }
+    }
+
+    for object in &req.objects {
+        if !object.has_own_rows() {
+            continue;
+        }
+        for name in extensions(conn, &object.schema, &object.name).await? {
+            if seen.insert(format!("ext:{name}")) {
+                put!(
+                    out,
+                    "CREATE EXTENSION IF NOT EXISTS {};\n",
+                    quote_ident(&name)
+                );
+            }
+        }
+    }
+
+    for object in &req.objects {
+        if !object.has_own_rows() {
+            continue;
+        }
+        for t in enum_types(conn, &object.schema, &object.name).await? {
+            if seen.insert(format!("type:{}.{}", t.schema, t.name)) {
+                put!(out, "{}", create_enum(&t, true));
+            }
+        }
+    }
+
+    put!(out, "\n");
+    Ok(())
+}
+
 /// Types and sequences the relation depends on, each written once.
 ///
 /// `seen` spans the whole file: two tables using the same enum must not each
 /// declare it, or the second `create type` fails the restore.
+///
+/// Under `safe` the enums are already in the preflight above, so only the
+/// sequences are left here — inside the transaction, where they belong.
 async fn types_and_sequences(
     conn: &mut PgConnection,
     object: &ObjectRef,
     out: &mut dyn DumpWriter,
     seen: &mut HashSet<String>,
+    safe: bool,
 ) -> Result<()> {
     if !object.has_own_rows() {
         return Ok(());
     }
 
-    for t in enum_types(conn, &object.schema, &object.name).await? {
-        if seen.insert(format!("type:{}.{}", t.schema, t.name)) {
-            put!(out, "{}", create_enum(&t));
+    if !safe {
+        for t in enum_types(conn, &object.schema, &object.name).await? {
+            if seen.insert(format!("type:{}.{}", t.schema, t.name)) {
+                put!(out, "{}", create_enum(&t, false));
+            }
         }
     }
     for s in sequences(conn, &object.schema, &object.name).await? {
         if s.standalone && seen.insert(format!("seq:{}.{}", s.schema, s.name)) {
-            put!(out, "{}", create_sequence(&s));
+            put!(out, "{}", create_sequence(&s, safe));
         }
     }
     put!(out, "\n");
@@ -767,7 +1152,10 @@ async fn structure(
     req: &ExportRequest,
     out: &mut dyn DumpWriter,
 ) -> Result<()> {
-    if req.drop_if_exists {
+    // Never under `safe`: dropping the relation would take the target's rows
+    // with it, which is the one outcome the mode exists to rule out. The two
+    // are held apart in the dialog as well; this is the backend agreeing.
+    if req.drop_if_exists && !req.safe {
         put!(
             out,
             "{}",
@@ -775,13 +1163,18 @@ async fn structure(
         );
     }
 
+    let target = qualified(&object.schema, &object.name);
     match object.kind.as_str() {
+        // `create or replace` rather than a drop, in both modes: a view holds
+        // nothing, and dropping one takes every view built on it with it — the
+        // target's, not the dump's.
         "view" => {
             let body = view_body(conn, &object.schema, &object.name).await?;
             put!(
                 out,
-                "CREATE VIEW {} AS\n{}\n",
-                qualified(&object.schema, &object.name),
+                "CREATE{} VIEW {} AS\n{}\n",
+                if req.safe { " OR REPLACE" } else { "" },
+                target,
                 body.trim_end()
             );
         }
@@ -789,14 +1182,30 @@ async fn structure(
             let body = view_body(conn, &object.schema, &object.name).await?;
             put!(
                 out,
-                "CREATE MATERIALIZED VIEW {} AS\n{}\n",
-                qualified(&object.schema, &object.name),
+                "CREATE MATERIALIZED VIEW {}{} AS\n{}\n",
+                if req.safe { "IF NOT EXISTS " } else { "" },
+                target,
                 body.trim_end()
             );
         }
         _ => {
             let cols = columns(conn, &object.schema, &object.name).await?;
-            put!(out, "{}", create_table(&object.schema, &object.name, &cols));
+            put!(
+                out,
+                "{}",
+                create_table(&object.schema, &object.name, &cols, req.safe)
+            );
+            // `if not exists` on its own says nothing about a table that exists
+            // and is short a column. This is what makes the restore converge
+            // rather than merely not fail.
+            if req.safe {
+                put!(
+                    out,
+                    "-- brings a table that was already there up to these columns; every\n\
+                     -- line below does nothing on a restore that just created it\n"
+                );
+                put!(out, "{}", add_columns(&object.schema, &object.name, &cols));
+            }
             for line in comments(conn, &object.schema, &object.name).await? {
                 put!(out, "{line}\n");
             }
@@ -806,9 +1215,14 @@ async fn structure(
     Ok(())
 }
 
-/// Keys, checks, and indexes: everything that belongs after the rows it would
-/// otherwise slow down being loaded.
-async fn keys_and_indexes(
+/// Removes the constraints that stand between a row and the table it goes in.
+///
+/// The prologue of a safe export, and the reason `data only` into a database
+/// that already has the schema stops being a guessing game about which table to
+/// select first: with the foreign keys off, the order of the inserts no longer
+/// decides whether they succeed. Both are added back before the transaction
+/// commits, so the target never ends up with fewer than it started with.
+async fn drop_constraints(
     conn: &mut PgConnection,
     object: &ObjectRef,
     out: &mut dyn DumpWriter,
@@ -821,17 +1235,73 @@ async fn keys_and_indexes(
     for c in constraints(conn, &object.schema, &object.name)
         .await?
         .iter()
-        .filter(|c| c.kind != "f")
+        .filter(|c| c.kind == "f" || c.kind == "c")
     {
-        put!(
-            out,
-            "ALTER TABLE {} ADD CONSTRAINT {} {};\n",
-            target,
-            quote_ident(&c.name),
-            c.definition
-        );
+        put!(out, "{}", drop_constraint_statement(&target, &c.name));
     }
+    Ok(())
+}
+
+/// Adds back the constraints of the given kinds, in the order the server lists
+/// them.
+///
+/// `p` primary key, `u` unique, `c` check, `f` foreign key. Which kinds land in
+/// which phase is the whole shape of the file, so the caller says rather than
+/// this deciding.
+async fn add_constraints(
+    conn: &mut PgConnection,
+    object: &ObjectRef,
+    out: &mut dyn DumpWriter,
+    kinds: &[&str],
+    safe: bool,
+) -> Result<()> {
+    if !object.has_own_rows() {
+        return Ok(());
+    }
+
+    let target = qualified(&object.schema, &object.name);
+    for c in constraints(conn, &object.schema, &object.name)
+        .await?
+        .iter()
+        .filter(|c| kinds.contains(&c.kind.as_str()))
+    {
+        // A key something else may be pointing at cannot be dropped to be
+        // re-added; everything else can, and is, so a drifted definition comes
+        // back as the one the dump carries.
+        let statement = if safe && (c.kind == "p" || c.kind == "u") {
+            guarded_constraint(&target, &c.name, &c.definition)
+        } else {
+            constraint_statement(&target, &c.name, &c.definition, safe)
+        };
+        put!(out, "{statement}");
+    }
+    Ok(())
+}
+
+/// Keys, checks, and indexes: everything that belongs after the rows it would
+/// otherwise slow down being loaded.
+///
+/// Under `safe` the primary key is not here — it went in ahead of the data,
+/// because the upsert names it as its conflict target.
+async fn keys_and_indexes(
+    conn: &mut PgConnection,
+    object: &ObjectRef,
+    out: &mut dyn DumpWriter,
+    safe: bool,
+) -> Result<()> {
+    if !object.has_own_rows() {
+        return Ok(());
+    }
+
+    let kinds: &[&str] = if safe { &["u", "c"] } else { &["p", "u", "c"] };
+    add_constraints(conn, object, out, kinds, safe).await?;
+
     for definition in indexes(conn, &object.schema, &object.name).await? {
+        let definition = if safe {
+            guarded_index(&definition)
+        } else {
+            definition
+        };
         put!(out, "{definition};\n");
     }
     put!(out, "\n");
@@ -843,45 +1313,36 @@ async fn foreign_keys(
     conn: &mut PgConnection,
     object: &ObjectRef,
     out: &mut dyn DumpWriter,
+    safe: bool,
 ) -> Result<()> {
-    if !object.has_own_rows() {
-        return Ok(());
-    }
-
-    let target = qualified(&object.schema, &object.name);
-    for c in constraints(conn, &object.schema, &object.name)
-        .await?
-        .iter()
-        .filter(|c| c.kind == "f")
-    {
-        put!(
-            out,
-            "ALTER TABLE {} ADD CONSTRAINT {} {};\n",
-            target,
-            quote_ident(&c.name),
-            c.definition
-        );
-    }
-    Ok(())
+    add_constraints(conn, object, out, &["f"], safe).await
 }
 
 /// Where each sequence had got to, so the restored table's next insert does not
 /// collide with a key the dump already carried.
+///
+/// The `where` is the guard a safe restore needs: `setval` on a sequence that is
+/// not there raises, and a data-only restore has created no sequences at all.
 async fn sequence_values(
     conn: &mut PgConnection,
     object: &ObjectRef,
     out: &mut dyn DumpWriter,
+    safe: bool,
 ) -> Result<()> {
     if !object.has_own_rows() {
         return Ok(());
     }
     for s in sequences(conn, &object.schema, &object.name).await? {
         if let Some(value) = s.last_value {
+            let name = sql_literal(&qualified(&s.schema, &s.name));
+            let guard = if safe {
+                format!(" WHERE to_regclass({name}) IS NOT NULL")
+            } else {
+                String::new()
+            };
             put!(
                 out,
-                "SELECT pg_catalog.setval({}, {}, true);\n",
-                sql_literal(&qualified(&s.schema, &s.name)),
-                value
+                "SELECT pg_catalog.setval({name}, {value}, true){guard};\n"
             );
         }
     }
@@ -898,6 +1359,7 @@ async fn data(
     object: &ObjectRef,
     out: &mut dyn DumpWriter,
     cancel: &AtomicBool,
+    safe: bool,
 ) -> Result<u64> {
     // A view's rows belong to its query and a materialized view's come back
     // with `refresh`; writing either as inserts would restore a copy that stops
@@ -917,7 +1379,24 @@ async fn data(
         qualified(&object.schema, &object.name)
     );
 
-    let statement = insert_select(&object.schema, &object.name, &cols);
+    // The conflict target, and the reason a safe dump can be run twice. Without
+    // a primary key there is nothing to name, so the row is skipped rather than
+    // updated — worth saying in the file, because "some rows did not change" is
+    // otherwise indistinguishable from a bug.
+    let key = if safe {
+        let key = primary_key_columns(conn, &object.schema, &object.name).await?;
+        if key.is_empty() {
+            put!(
+                out,
+                "-- no primary key: a row already present is left as it is\n"
+            );
+        }
+        Some(key)
+    } else {
+        None
+    };
+
+    let statement = insert_select(&object.schema, &object.name, &cols, key.as_deref());
     let mut rows = 0u64;
     {
         let mut stream = sqlx::query_scalar::<_, Option<String>>(&statement).fetch(&mut *conn);
@@ -1015,7 +1494,7 @@ mod tests {
     #[test]
     fn quotes_every_identifier_in_a_create_table() {
         let cols = vec![column("select", "text"), column("we\"ird", "integer")];
-        let ddl = create_table("pu\"blic", "us'ers", &cols);
+        let ddl = create_table("pu\"blic", "us'ers", &cols, false);
         assert!(ddl.starts_with("CREATE TABLE \"pu\"\"blic\".\"us'ers\" (\n"));
         assert!(ddl.contains("    \"select\" text"));
         assert!(ddl.contains("    \"we\"\"ird\" integer"));
@@ -1027,7 +1506,7 @@ mod tests {
     #[test]
     fn puts_every_value_through_the_server_quoting() {
         let cols = vec![column("id", "integer"), column("email", "text")];
-        let sql = insert_select("public", "users", &cols);
+        let sql = insert_select("public", "users", &cols, None);
         assert_eq!(
             sql,
             "select 'INSERT INTO \"public\".\"users\" (\"id\", \"email\") VALUES (' \
@@ -1041,7 +1520,7 @@ mod tests {
         let mut total = column("total", "numeric");
         total.generated = "s".to_string();
         let cols = vec![column("id", "integer"), total];
-        let sql = insert_select("public", "lines", &cols);
+        let sql = insert_select("public", "lines", &cols, None);
         assert!(sql.contains("(\"id\")"));
         assert!(!sql.contains("total"));
     }
@@ -1052,19 +1531,19 @@ mod tests {
     fn overrides_an_always_identity_so_keys_survive_the_restore() {
         let mut id = column("id", "integer");
         id.identity = "a".to_string();
-        let sql = insert_select("public", "users", &[id]);
+        let sql = insert_select("public", "users", &[id], None);
         assert!(sql.contains("(\"id\") OVERRIDING SYSTEM VALUE VALUES ("));
 
         let mut by_default = column("id", "integer");
         by_default.identity = "d".to_string();
-        let sql = insert_select("public", "users", &[by_default]);
+        let sql = insert_select("public", "users", &[by_default], None);
         assert!(!sql.contains("OVERRIDING"));
     }
 
     /// An apostrophe in a table name would end the composed literal early.
     #[test]
     fn survives_an_apostrophe_in_a_relation_name() {
-        let sql = insert_select("public", "user's", &[column("id", "integer")]);
+        let sql = insert_select("public", "user's", &[column("id", "integer")], None);
         assert!(sql.contains("'INSERT INTO \"public\".\"user''s\" (\"id\") VALUES ('"));
         assert!(sql.ends_with("from \"public\".\"user's\""));
     }
@@ -1091,6 +1570,216 @@ mod tests {
             copy_csv("public", "users"),
             "COPY \"public\".\"users\" TO STDOUT WITH (FORMAT csv, HEADER true)"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Safe export
+    //
+    // Every one of these is a sentence a restore prints when the guard is
+    // missing. They are worth pinning individually because each failure stops
+    // the file at a different line and reads like a different bug.
+    // -----------------------------------------------------------------------
+
+    /// `relation "users" already exists`.
+    #[test]
+    fn a_safe_create_does_not_argue_with_what_is_already_there() {
+        let cols = vec![column("id", "integer")];
+        assert!(create_table("public", "users", &cols, true)
+            .starts_with("CREATE TABLE IF NOT EXISTS \"public\".\"users\""));
+        assert!(create_table("public", "users", &cols, false)
+            .starts_with("CREATE TABLE \"public\".\"users\""));
+    }
+
+    /// `column "nickname" of relation "users" does not exist`, three hundred
+    /// lines after the `create table if not exists` that skipped over it.
+    #[test]
+    fn a_table_that_is_already_there_gets_the_columns_it_is_missing() {
+        let mut nickname = column("nickname", "text");
+        nickname.default = Some("''".to_string());
+        nickname.not_null = true;
+
+        let sql = add_columns("public", "users", &[column("id", "integer"), nickname]);
+        assert!(sql.contains("ALTER TABLE \"public\".\"users\" ADD COLUMN IF NOT EXISTS \"id\" integer;"));
+        assert!(sql.contains("\"nickname\" text DEFAULT '' NOT NULL;"));
+    }
+
+    /// `column "nickname" of relation "users" contains null values` — the
+    /// reconcile cannot demand of the rows already there what it has nothing to
+    /// fill them with.
+    #[test]
+    fn a_column_added_to_a_populated_table_arrives_nullable() {
+        let mut nickname = column("nickname", "text");
+        nickname.not_null = true;
+        let sql = add_columns("public", "users", &[nickname]);
+        assert!(sql.contains("ADD COLUMN IF NOT EXISTS \"nickname\" text;"));
+        assert!(!sql.contains("NOT NULL"));
+        assert!(sql.contains("-- nullable here"));
+    }
+
+    /// `duplicate key value violates unique constraint "users_pkey"`, which is
+    /// what every second run of an ordinary dump ends on.
+    #[test]
+    fn a_row_that_is_already_there_is_brought_up_to_date() {
+        let cols = vec![column("id", "integer"), column("email", "text")];
+        let key = vec!["id".to_string()];
+        let sql = insert_select("public", "users", &cols, Some(&key));
+        assert!(sql.ends_with(
+            "|| ') ON CONFLICT (\"id\") DO UPDATE SET \"email\" = EXCLUDED.\"email\";' \
+             from \"public\".\"users\""
+        ));
+    }
+
+    #[test]
+    fn a_composite_key_names_every_column_it_is_made_of() {
+        let cols = vec![
+            column("order_id", "integer"),
+            column("line", "integer"),
+            column("qty", "integer"),
+        ];
+        let key = vec!["order_id".to_string(), "line".to_string()];
+        let sql = insert_select("public", "lines", &cols, Some(&key));
+        assert!(sql.contains("ON CONFLICT (\"order_id\", \"line\") DO UPDATE SET \"qty\" = EXCLUDED.\"qty\""));
+    }
+
+    /// Without a key there is nothing to name as the conflict target, and
+    /// `on conflict` with no target and an update half does not parse.
+    #[test]
+    fn a_table_with_no_key_skips_rather_than_fails() {
+        let cols = vec![column("event", "text")];
+        let sql = insert_select("public", "log", &cols, Some(&[]));
+        assert!(sql.contains("ON CONFLICT DO NOTHING"));
+        assert!(!sql.contains("DO UPDATE"));
+    }
+
+    /// `syntax error at or near ";"` — an empty `set` list is not a statement.
+    #[test]
+    fn a_table_that_is_all_key_has_nothing_left_to_update() {
+        let cols = vec![column("tag_id", "integer"), column("post_id", "integer")];
+        let key = vec!["tag_id".to_string(), "post_id".to_string()];
+        let sql = insert_select("public", "tagged", &cols, Some(&key));
+        assert!(sql.contains("ON CONFLICT (\"tag_id\", \"post_id\") DO NOTHING"));
+    }
+
+    /// `column "id" can only be updated to DEFAULT`. An `always` identity takes
+    /// a value on the way in through `overriding system value`, which has no
+    /// `update` half to hide behind.
+    #[test]
+    fn an_always_identity_is_never_updated() {
+        let mut serial = column("serial", "integer");
+        serial.identity = "a".to_string();
+        let cols = vec![column("id", "integer"), serial, column("email", "text")];
+        let key = vec!["id".to_string()];
+        let sql = insert_select("public", "users", &cols, Some(&key));
+        assert!(sql.contains("DO UPDATE SET \"email\" = EXCLUDED.\"email\";"));
+        assert!(!sql.contains("\"serial\" = EXCLUDED"));
+    }
+
+    /// `constraint "child_qty_positive" already exists`. There is no
+    /// `add constraint if not exists`, so the name has to be cleared first —
+    /// which doubles as the reconcile when the definition has drifted.
+    #[test]
+    fn a_constraint_makes_room_for_itself_before_it_lands() {
+        let safe = constraint_statement("\"public\".\"users\"", "users_age", "CHECK (age > 0)", true);
+        assert_eq!(
+            safe,
+            "ALTER TABLE \"public\".\"users\" DROP CONSTRAINT IF EXISTS \"users_age\";\n\
+             ALTER TABLE \"public\".\"users\" ADD CONSTRAINT \"users_age\" CHECK (age > 0);\n"
+        );
+        assert_eq!(
+            constraint_statement("\"public\".\"users\"", "users_age", "CHECK (age > 0)", false),
+            "ALTER TABLE \"public\".\"users\" ADD CONSTRAINT \"users_age\" CHECK (age > 0);\n"
+        );
+    }
+
+    /// `cannot drop constraint "users_pkey" ... because other objects depend on
+    /// it`. The foreign key holding it down may be on a table nobody selected,
+    /// so a key is read for rather than replaced.
+    #[test]
+    fn a_key_something_may_point_at_is_never_dropped() {
+        let sql = guarded_constraint("\"public\".\"users\"", "users_pkey", "PRIMARY KEY (id)");
+        assert!(sql.contains("SELECT 1 FROM pg_catalog.pg_constraint"));
+        assert!(sql.contains("WHERE conrelid = '\"public\".\"users\"'::regclass"));
+        assert!(sql.contains("conname = 'users_pkey'"));
+        assert!(sql.contains(
+            "ALTER TABLE \"public\".\"users\" ADD CONSTRAINT \"users_pkey\" PRIMARY KEY (id);"
+        ));
+        assert!(!sql.contains("DROP CONSTRAINT"));
+    }
+
+    /// The prologue runs before the tables exist in a structure restore and
+    /// before the constraint exists in a database that never had it. Both
+    /// guards are load-bearing.
+    #[test]
+    fn the_prologue_survives_a_table_that_is_not_there_yet() {
+        assert_eq!(
+            drop_constraint_statement("\"public\".\"orders\"", "orders_user_id_fkey"),
+            "ALTER TABLE IF EXISTS \"public\".\"orders\" \
+             DROP CONSTRAINT IF EXISTS \"orders_user_id_fkey\";\n"
+        );
+    }
+
+    /// `relation "users_email_idx" already exists`.
+    #[test]
+    fn an_index_is_guarded_whichever_of_the_two_shapes_it_has() {
+        assert_eq!(
+            guarded_index("CREATE INDEX users_email_idx ON public.users USING btree (email)"),
+            "CREATE INDEX IF NOT EXISTS users_email_idx ON public.users USING btree (email)"
+        );
+        assert_eq!(
+            guarded_index("CREATE UNIQUE INDEX users_email_key ON public.users USING btree (email)"),
+            "CREATE UNIQUE INDEX IF NOT EXISTS users_email_key ON public.users USING btree (email)"
+        );
+        // Only the keyword the server actually wrote, and only once.
+        assert_eq!(
+            guarded_index("CREATE INDEX a ON t (x) WHERE x = 'CREATE INDEX '"),
+            "CREATE INDEX IF NOT EXISTS a ON t (x) WHERE x = 'CREATE INDEX '"
+        );
+    }
+
+    /// `type "mood" already exists`. `create type` has no guard of its own, so
+    /// the guard has to read the catalogue.
+    #[test]
+    fn an_enum_is_created_only_when_it_is_missing() {
+        let mood = EnumType {
+            schema: "public".into(),
+            name: "mood".into(),
+            labels: vec!["sad".into(), "glad".into()],
+        };
+
+        let plain = create_enum(&mood, false);
+        assert_eq!(
+            plain,
+            "CREATE TYPE \"public\".\"mood\" AS ENUM ('sad', 'glad');\n"
+        );
+
+        let safe = create_enum(&mood, true);
+        assert!(safe.contains("IF to_regtype('\"public\".\"mood\"') IS NULL THEN"));
+        assert!(safe.contains("CREATE TYPE \"public\".\"mood\" AS ENUM ('sad', 'glad');"));
+        // A type that is already there is not necessarily the same type: a
+        // label added since the last export would fail every row carrying it.
+        assert!(safe.contains("ALTER TYPE \"public\".\"mood\" ADD VALUE IF NOT EXISTS 'sad';"));
+        assert!(safe.contains("ALTER TYPE \"public\".\"mood\" ADD VALUE IF NOT EXISTS 'glad';"));
+        assert_eq!(safe.matches("ADD VALUE").count(), 2);
+    }
+
+    #[test]
+    fn a_safe_sequence_does_not_argue_either() {
+        let seq = Sequence {
+            schema: "public".into(),
+            name: "users_id_seq".into(),
+            data_type: "bigint".into(),
+            increment: 1,
+            min_value: 1,
+            max_value: i64::MAX,
+            start_value: 1,
+            cycle: false,
+            last_value: Some(7),
+            standalone: true,
+        };
+        assert!(create_sequence(&seq, true)
+            .starts_with("CREATE SEQUENCE IF NOT EXISTS \"public\".\"users_id_seq\""));
+        assert!(create_sequence(&seq, false)
+            .starts_with("CREATE SEQUENCE \"public\".\"users_id_seq\""));
     }
 
     /// The modes are what the include control means, and getting one backwards
