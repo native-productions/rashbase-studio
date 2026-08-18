@@ -58,9 +58,11 @@ else
 fi
 
 info "Looking up $VERSION release of $REPO"
+# A draft release is invisible to this endpoint, so a 404 here usually means
+# the release exists but has not been published yet.
 release_json="$(curl -fsSL -H 'Accept: application/vnd.github+json' \
   ${GITHUB_TOKEN:+-H "Authorization: Bearer $GITHUB_TOKEN"} "$api")" \
-  || die "could not reach the GitHub releases API"
+  || die "no published $VERSION release for $REPO (drafts do not count), or the GitHub API is unreachable"
 
 # Asset names contain spaces, so read the already-encoded browser_download_url
 # rather than reconstructing it from the version and product name.

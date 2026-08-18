@@ -1,33 +1,73 @@
 #!/usr/bin/env bash
 #
-# Cut a release: bump the version in every manifest, commit, tag, push.
-# The `release` workflow picks the tag up and publishes a draft GitHub release
-# with the macOS, Windows and Linux artifacts attached.
+# Cut a release: bump the version in every manifest, commit, tag, push, then
+# trigger the release workflow. The workflow publishes a draft GitHub release
+# with the built artifacts attached.
 #
-#   ./scripts/release.sh 0.2.0
-#   ./scripts/release.sh 0.2.0 --dry-run
+#   ./scripts/release.sh 0.2.0                  # all platforms
+#   ./scripts/release.sh 0.2.0 linux,windows    # only those two
+#   ./scripts/release.sh 0.2.0 macos --dry-run  # show the bump, change nothing
+#
+# Platforms: macos (builds both Apple Silicon and Intel), windows, linux.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+REPO="native-productions/rashbase-studio"
+WORKFLOW="release.yml"
+ALL_PLATFORMS="macos,windows,linux"
+KNOWN_PLATFORMS="macos windows linux"
+
 die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 info() { printf '\033[36m==>\033[0m %s\n' "$*"; }
+usage() { die "usage: $0 <version> [platforms] [--dry-run]  (platforms: $KNOWN_PLATFORMS)"; }
 
-version="${1:-}"
+# --- arguments --------------------------------------------------------------
+
+version=""
+platforms=""
 dry_run=""
-[ "${2:-}" = "--dry-run" ] && dry_run=1
 
-[ -n "$version" ] || die "usage: $0 <version> [--dry-run]"
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) dry_run=1 ;;
+    -h|--help) usage ;;
+    -*) die "unknown flag: $arg" ;;
+    *)
+      if [ -z "$version" ]; then version="$arg"
+      elif [ -z "$platforms" ]; then platforms="$arg"
+      else die "unexpected argument: $arg"
+      fi
+      ;;
+  esac
+done
+
+[ -n "$version" ] || usage
+
 version="${version#v}"
 printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' \
   || die "version must be semver, e.g. 0.2.0"
-
 tag="v$version"
+
+platforms="${platforms:-$ALL_PLATFORMS}"
+# Validate here rather than letting the workflow reject it, so a typo never
+# leaves a pushed tag with no build behind it.
+for p in $(printf '%s' "$platforms" | tr -d '[:blank:]' | tr ',' ' '); do
+  case " $KNOWN_PLATFORMS " in
+    *" $p "*) ;;
+    *) die "unknown platform '$p' (known: $KNOWN_PLATFORMS)" ;;
+  esac
+done
+
+# --- preflight --------------------------------------------------------------
+
+command -v gh >/dev/null 2>&1 || die "the GitHub CLI (gh) is required: https://cli.github.com"
+gh auth status >/dev/null 2>&1 || die "gh is not authenticated; run: gh auth login"
 
 [ -z "$(git status --porcelain)" ] || die "working tree is dirty; commit or stash first"
 git rev-parse -q --verify "refs/tags/$tag" >/dev/null && die "tag $tag already exists"
 
-# --- bump ------------------------------------------------------------------
+# --- bump -------------------------------------------------------------------
 
 info "Bumping to $version"
 
@@ -47,6 +87,7 @@ git --no-pager diff --stat
 if [ -n "$dry_run" ]; then
   info "Dry run: reverting the bump"
   git checkout -- package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
+  info "Would have tagged $tag and built: $platforms"
   exit 0
 fi
 
@@ -61,6 +102,14 @@ info "Pushing $branch and $tag"
 git push origin "$branch"
 git push origin "$tag"
 
-info "Pushed. The release workflow will attach the artifacts to a draft release:"
-info "  https://github.com/native-productions/rashbase-studio/releases"
-info "Review the draft, then publish it."
+# --- build ------------------------------------------------------------------
+
+info "Triggering the release workflow for $platforms"
+gh workflow run "$WORKFLOW" --repo "$REPO" \
+  --field tag="$tag" \
+  --field platforms="$platforms"
+
+info "Watch it here:"
+info "  https://github.com/$REPO/actions/workflows/$WORKFLOW"
+info "When it finishes, review the draft release and publish it:"
+info "  https://github.com/$REPO/releases"

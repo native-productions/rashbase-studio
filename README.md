@@ -138,15 +138,32 @@ bun run tauri build
 ## Releasing
 
 ```sh
-./scripts/release.sh 0.2.0            # bump, commit, tag, push
-./scripts/release.sh 0.2.0 --dry-run  # show the bump without committing
+./scripts/release.sh 0.2.0                  # all platforms
+./scripts/release.sh 0.2.0 linux,windows    # only those two
+./scripts/release.sh 0.2.0 macos --dry-run  # show the bump, change nothing
 ```
 
+Platforms are `macos` (builds both Apple Silicon and Intel), `windows`, and
+`linux`; the default is all three.
+
 The script bumps the version in `package.json`, `src-tauri/tauri.conf.json` and
-`src-tauri/Cargo.toml`, then pushes a `v0.2.0` tag. The
-[release workflow](.github/workflows/release.yml) builds macOS (arm64 and
-x86_64), Windows and Linux artifacts on that tag and attaches them to a **draft**
+`src-tauri/Cargo.toml`, pushes a `v0.2.0` tag, then triggers the
+[release workflow](.github/workflows/release.yml) with `gh workflow run`. The
+workflow builds the selected platforms and attaches the artifacts to a **draft**
 release. Review the draft on GitHub, then publish it.
+
+Requires the [GitHub CLI](https://cli.github.com) to be installed and
+authenticated. The workflow is dispatch-only — pushing a tag by hand does not
+build anything, because a push trigger would fire a second, unfiltered build for
+the same tag.
+
+If one platform fails, re-run just that leg against the tag that already exists.
+`release.sh` refuses to reuse a tag, so dispatch the workflow directly; the new
+artifacts are added to the same draft release:
+
+```sh
+gh workflow run release.yml -f tag=v0.2.0 -f platforms=windows
+```
 
 ## Tests
 

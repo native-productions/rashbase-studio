@@ -1,38 +1,74 @@
 name: release
 
+# Dispatch-only on purpose. `scripts/release.sh` pushes the tag and then
+# triggers this workflow with `gh workflow run`, which is what lets a release
+# target a subset of platforms. A `push: tags` trigger would fire a second,
+# unfiltered build for the same tag.
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
         description: 'Tag to build and publish (e.g. v0.1.0)'
         required: true
+      platforms:
+        description: 'Comma-separated: macos, windows, linux'
+        required: false
+        default: 'macos,windows,linux'
 
 jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.select.outputs.include }}
+    steps:
+      - id: select
+        env:
+          PLATFORMS: ${{ inputs.platforms }}
+        run: |
+          set -euo pipefail
+
+          # `key` is what the caller selects on; macos deliberately maps to two
+          # legs because a universal release needs both Apple architectures.
+          all='[
+            {"key":"macos",   "platform":"macos-latest",  "args":"--target aarch64-apple-darwin", "name":"macOS (Apple Silicon)"},
+            {"key":"macos",   "platform":"macos-latest",  "args":"--target x86_64-apple-darwin",  "name":"macOS (Intel)"},
+            {"key":"linux",   "platform":"ubuntu-22.04",  "args":"",                              "name":"Linux (x86_64)"},
+            {"key":"windows", "platform":"windows-latest","args":"",                              "name":"Windows (x64)"}
+          ]'
+
+          selected="$(printf '%s' "$PLATFORMS" | tr -d '[:blank:]' | tr ',' '\n' | grep -v '^$' | sort -u)"
+          [ -n "$selected" ] || { echo "::error::no platforms selected"; exit 1; }
+
+          known="$(printf '%s' "$all" | jq -r '.[].key' | sort -u)"
+          unknown="$(comm -23 <(printf '%s\n' "$selected") <(printf '%s\n' "$known") || true)"
+          if [ -n "$unknown" ]; then
+            echo "::error::unknown platform(s): $(printf '%s' "$unknown" | tr '\n' ' ')(known: $(printf '%s' "$known" | tr '\n' ' '))"
+            exit 1
+          fi
+
+          include="$(printf '%s' "$all" | jq -c \
+            --argjson want "$(printf '%s' "$selected" | jq -R . | jq -s .)" \
+            '[.[] | select(.key as $k | $want | index($k))]')"
+
+          echo "Building: $(printf '%s' "$include" | jq -r '[.[].name] | join(", ")')"
+          echo "include=$include" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: matrix
     permissions:
       contents: write
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: macos-latest
-            args: '--target aarch64-apple-darwin'
-          - platform: macos-latest
-            args: '--target x86_64-apple-darwin'
-          - platform: ubuntu-22.04
-            args: ''
-          - platform: windows-latest
-            args: ''
+        include: ${{ fromJSON(needs.matrix.outputs.include) }}
 
     runs-on: ${{ matrix.platform }}
+    name: ${{ matrix.name }}
 
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ inputs.tag }}
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -46,24 +82,25 @@ jobs:
         with:
           workspaces: './src-tauri -> target'
 
-      # WebKitGTK and friends are only present on the Linux runner image as dev
-      # packages we have to pull in ourselves.
+      # WebKitGTK and friends ship as dev packages the runner image does not
+      # carry. This is Tauri v2's Ubuntu prerequisite list; note that it is
+      # libayatana-appindicator3-dev, NOT libappindicator3-dev -- the two
+      # conflict and installing both fails the job.
       - name: Install Linux build dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            xdg-utils \
             build-essential \
             curl \
             wget \
             file \
+            libxdo-dev \
             libssl-dev \
-            libayatana-appindicator3-dev
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
 
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
@@ -72,7 +109,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ inputs.tag || github.ref_name }}
+          tagName: ${{ inputs.tag }}
           releaseName: 'Rashbase Studio __VERSION__'
           releaseBody: |
             ## Install
