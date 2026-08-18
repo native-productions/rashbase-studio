@@ -201,6 +201,12 @@ Rules that hold everywhere:
 - Nothing is wrapped in a container unless the container does something.
 - Spacing varies by density: 24px grid rows, 28px grid header, 44px titlebar,
   24px status bar.
+- The macOS traffic lights are moved down to the tab row (`trafficLightPosition`
+  in `tauri.conf.json`). They default to the middle of a 28px system titlebar,
+  which is the middle of nothing in a 44px bar whose tabs hang from the bottom.
+  Everything in that strip shares one line, or it reads as two rows that failed
+  to line up. The arithmetic tying the two numbers together is in
+  `Titlebar.tsx`; changing the bar height means changing the inset.
 - Resizable split between editor and results; both panes have an 80px floor.
 
 ## Logo

@@ -109,6 +109,24 @@ export const COMMANDS: Command[] = [
     run: () => s().cycleTab(-1),
   },
 
+  {
+    id: "export.objects",
+    label: "Export tables…",
+    group: "Query",
+    // ⌘E is the cell expander, which is used far more often than an export is.
+    keys: "⌘⇧E",
+    enabled: () => !!s().activeConnectionId,
+    run: () => {
+      const connectionId = s().activeConnectionId;
+      if (!connectionId) return;
+      // Whatever is picked in the sidebar, or nothing — the dialog carries the
+      // whole tree, so opening it with an empty set is a valid place to start.
+      const { selection } = s();
+      const keys = selection.connectionId === connectionId ? selection.keys : [];
+      s().setExportTarget({ connectionId, keys });
+    },
+  },
+
   // ---- Connections ------------------------------------------------------
   {
     id: "connection.new",

@@ -12,6 +12,10 @@ import type {
   ColumnInfo,
   ConnectionConfig,
   ConnectionInfo,
+  ExportFormat,
+  ExportLayout,
+  ExportRequest,
+  ExportSummary,
   FunctionEntry,
   IndexInfo,
   QueryResult,
@@ -77,6 +81,37 @@ export const ipc = {
     value: string | null,
     keys: RowKey[],
   ) => invoke<string | null>("update_cell", { id, schema, table, column, value, keys }),
+
+  /**
+   * Dumps the named relations into `directory`.
+   *
+   * `jobId` is made here rather than returned, so Stop has something to name
+   * before this promise settles. Progress arrives as `export://progress`
+   * events carrying the same id; a dump of a large table runs for minutes.
+   */
+  exportObjects: (id: string, jobId: string, req: ExportRequest) =>
+    invoke<ExportSummary>("export_objects", { id, jobId, req }),
+
+  cancelExport: (jobId: string) => invoke<void>("cancel_export", { jobId }),
+
+  /**
+   * Whether these settings would replace something already on disk. Asked of
+   * the backend because the backend is what decides the final file name.
+   */
+  exportTargetExists: (
+    directory: string,
+    fileName: string,
+    format: ExportFormat,
+    layout: ExportLayout,
+    compress: boolean,
+  ) =>
+    invoke<boolean>("export_target_exists", {
+      directory,
+      fileName,
+      format,
+      layout,
+      compress,
+    }),
 
   /** Databases on this session's server the connected role can actually open. */
   listDatabases: (id: string) => invoke<string[]>("list_databases", { id }),

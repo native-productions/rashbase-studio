@@ -164,6 +164,55 @@ export interface DbError {
 }
 
 // ---------------------------------------------------------------------------
+// Export
+// ---------------------------------------------------------------------------
+
+export type ExportFormat = "sql" | "csv";
+
+/** How much of a relation goes into the dump. A property of the export, not of
+ *  each table: per-table it becomes a checkbox matrix nobody can read. */
+export type ExportMode = "structure" | "data" | "full";
+
+export type ExportLayout = "single" | "per-table";
+
+/** One relation to export, as the sidebar knows it. */
+export interface ObjectRef {
+  schema: string;
+  name: string;
+  /** Matches `TableEntry["kind"]`. Only a table's rows are its own. */
+  kind: TableEntry["kind"];
+}
+
+export interface ExportRequest {
+  objects: ObjectRef[];
+  format: ExportFormat;
+  mode: ExportMode;
+  dropIfExists: boolean;
+  layout: ExportLayout;
+  compress: boolean;
+  /** From the native folder picker, so it is a real path. */
+  directory: string;
+  /** Without an extension. The backend appends the right one. */
+  fileName: string;
+}
+
+export interface ExportSummary {
+  path: string;
+  bytes: number;
+  tables: number;
+  rows: number;
+  durationMs: number;
+}
+
+/** One `export://progress` event: which relation, and how far along the set is. */
+export interface ExportProgress {
+  jobId: string;
+  table: string;
+  done: number;
+  total: number;
+}
+
+// ---------------------------------------------------------------------------
 // SQL: what the statement builders read
 // ---------------------------------------------------------------------------
 

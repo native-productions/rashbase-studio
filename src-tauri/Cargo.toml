@@ -42,6 +42,12 @@ keyring = { version = "3", features = [
     "sync-secret-service",
 ] }
 
+# Export: gzip for a single dumped file, tar for the per-table archive. `tar`
+# needs each entry's size up front, which is why that layout stages its files
+# on disk before it builds the archive.
+flate2 = "1"
+tar = "0.4"
+
 thiserror = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 russh = { version = "0.62.6", default-features = false, features = ["ring", "rsa", "flate2"] }

@@ -1,6 +1,7 @@
 //! The PostgreSQL driver.
 
 mod catalog;
+mod dump;
 mod session;
 mod sql;
 mod types;
@@ -41,6 +42,7 @@ impl Driver for PgDriver {
             indexes: true,
             row_edit: true,
             cancel: true,
+            export: true,
         }
     }
 

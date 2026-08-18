@@ -49,6 +49,12 @@ pub enum Error {
     #[error("{0}")]
     SshSecretRequired(String),
 
+    /// The user stopped an export while it was running. Coded so the frontend
+    /// can say "stopped" rather than showing it as a failure: nothing went
+    /// wrong, and the partial file has already been removed.
+    #[error("Export stopped.")]
+    Cancelled,
+
     #[error("{0}")]
     Other(String),
 }
@@ -113,6 +119,10 @@ pub const CREDENTIAL_UNREADABLE: &str = "CREDENTIAL_UNREADABLE";
 /// rather than on the database password the user did not get asked for.
 pub const SSH_SECRET_REQUIRED: &str = "SSH_SECRET_REQUIRED";
 
+/// Error code for work the user stopped on purpose. The frontend matches on it
+/// to close quietly instead of raising an error toast.
+pub const CANCELLED: &str = "CANCELLED";
+
 /// The single shape every rejected command produces. Keeping it flat means the
 /// frontend has one error branch, not one per failure mode.
 #[derive(Serialize)]
@@ -147,6 +157,13 @@ impl Serialize for Error {
                 code: Some(CREDENTIAL_UNREADABLE),
                 detail: None,
                 hint: Some(platform),
+                position: None,
+            },
+            Error::Cancelled => ErrorPayload {
+                message: self.to_string(),
+                code: Some(CANCELLED),
+                detail: None,
+                hint: None,
                 position: None,
             },
             Error::SshSecretRequired(_) => ErrorPayload {

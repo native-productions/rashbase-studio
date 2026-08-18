@@ -5,16 +5,17 @@
 //! database means one line in `Default` and a folder next to `postgres`.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
 use crate::drivers::postgres::PgDriver;
 use crate::drivers::types::{
-    ColumnInfo, ConnectionConfig, ConnectionInfo, FunctionEntry, IndexInfo, QueryResult, RowCount,
-    SchemaEntry, TableEntry,
+    ColumnInfo, ConnectionConfig, ConnectionInfo, DumpStats, ExportRequest, FunctionEntry,
+    IndexInfo, QueryResult, RowCount, SchemaEntry, TableEntry,
 };
-use crate::drivers::{Driver, Session};
+use crate::drivers::{Driver, DumpWriter, Session};
 use crate::error::{Error, Result};
 use crate::ssh::{self, Tunnel};
 
@@ -33,6 +34,14 @@ struct Open {
 pub struct DbState {
     drivers: HashMap<&'static str, Arc<dyn Driver>>,
     sessions: RwLock<HashMap<String, Open>>,
+    /// The stop flag of each export in flight, keyed by the job id the caller
+    /// made.
+    ///
+    /// A flag rather than an abort handle: the dump reads it between rows and
+    /// returns, so it unwinds through its own error path and the caller still
+    /// gets to delete what was written. Killing the task instead would leave a
+    /// half-written file behind looking finished.
+    exports: RwLock<HashMap<String, Arc<AtomicBool>>>,
 }
 
 impl Default for DbState {
@@ -43,6 +52,7 @@ impl Default for DbState {
         Self {
             drivers: drivers.into_iter().map(|d| (d.id(), d)).collect(),
             sessions: RwLock::default(),
+            exports: RwLock::default(),
         }
     }
 }
@@ -136,6 +146,36 @@ impl DbState {
         self.session(id).await?.cancel().await
     }
 
+    /// Runs an export, registering its stop flag for the length of the run.
+    ///
+    /// The flag is removed on every path, including the failing one: a job id
+    /// left in the map is a stop button wired to nothing.
+    pub async fn export(
+        &self,
+        id: &str,
+        job_id: &str,
+        req: &ExportRequest,
+        out: &mut dyn DumpWriter,
+    ) -> Result<DumpStats> {
+        let session = self.session(id).await?;
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.exports
+            .write()
+            .await
+            .insert(job_id.to_string(), cancel.clone());
+        let result = session.dump(req, out, &cancel).await;
+        self.exports.write().await.remove(job_id);
+        result
+    }
+
+    /// Asks an export to stop. Silent when the job has already finished, which
+    /// is what a Stop pressed a moment too late looks like.
+    pub async fn cancel_export(&self, job_id: &str) {
+        if let Some(flag) = self.exports.read().await.get(job_id) {
+            flag.store(true, Ordering::Relaxed);
+        }
+    }
+
     pub async fn update_cell(
         &self,
         id: &str,
@@ -172,7 +212,12 @@ impl DbState {
         self.session(id).await?.list_columns(schema, table).await
     }
 
-    pub async fn list_indexes(&self, id: &str, schema: &str, table: &str) -> Result<Vec<IndexInfo>> {
+    pub async fn list_indexes(
+        &self,
+        id: &str,
+        schema: &str,
+        table: &str,
+    ) -> Result<Vec<IndexInfo>> {
         self.session(id).await?.list_indexes(schema, table).await
     }
 

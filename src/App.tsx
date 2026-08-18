@@ -15,6 +15,7 @@ import { StructureView } from "@/components/table/StructureView";
 import { DefinitionView } from "@/components/table/DefinitionView";
 import { CommandPalette } from "@/components/palette/CommandPalette";
 import { ConnectionSheet } from "@/components/connection/ConnectionSheet";
+import { ExportDialog } from "@/components/export/ExportDialog";
 import { Logo } from "@/components/Logo";
 import { useHotkeys } from "@/lib/hotkeys";
 import { hasRows } from "@/lib/utils/tabs";
@@ -247,6 +248,7 @@ export default function App() {
       <CommandPalette />
       <CellModal />
       <ConnectionSheet />
+      <ExportDialog />
 
       {toast && (
         <div className="fixed right-4 bottom-9 max-w-96 rounded-md border border-line bg-overlay px-3 py-2 text-[12px] text-ink shadow-lg shadow-black/40">

@@ -19,8 +19,12 @@ import type { DbObject, StatementColumn } from "@/lib/types";
  * Only an ordinary table is offered the destructive pair. A catalogue relation
  * listed under Cluster is `other`, and offering to truncate `pg_roles` is not a
  * mistake worth leaving one misclick away.
+ *
+ * `selectedCount` is how many rows the gesture would act on, so the entry can
+ * say what it will actually do. "Export…" on a four-row selection would be a
+ * menu that does not describe itself.
  */
-export function objectMenuItems(object: DbObject): ContextMenuItem[] {
+export function objectMenuItems(object: DbObject, selectedCount = 1): ContextMenuItem[] {
   const isFunction = object.kind === "function";
   const isTable = object.kind === "table";
 
@@ -40,6 +44,19 @@ export function objectMenuItems(object: DbObject): ContextMenuItem[] {
       ],
     },
   ];
+
+  // A function has nothing to dump; everything else in the tree does.
+  if (!isFunction) {
+    items.push(
+      { kind: "separator" },
+      {
+        kind: "item",
+        id: "export",
+        label: selectedCount > 1 ? `Export ${selectedCount} tables…` : "Export…",
+        hint: "⌘⇧E",
+      },
+    );
+  }
 
   if (isTable) {
     items.push(

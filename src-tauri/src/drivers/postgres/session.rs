@@ -8,6 +8,8 @@
 //! of that. One dedicated `PgConnection` per connection id is both simpler and
 //! more correct here.
 
+use std::sync::atomic::AtomicBool;
+
 use async_trait::async_trait;
 use futures::StreamExt;
 use sqlx::postgres::{PgConnectOptions, PgConnection};
@@ -15,13 +17,14 @@ use sqlx::{Column, Connection, Either, Row, TypeInfo};
 use tokio::sync::Mutex;
 
 use crate::drivers::postgres::catalog;
+use crate::drivers::postgres::dump;
 use crate::drivers::postgres::sql::build_update;
 use crate::drivers::postgres::types::classify;
 use crate::drivers::types::{
-    ColumnInfo, ColumnMeta, ConnectionInfo, FunctionEntry, IndexInfo, QueryResult, RowCount,
-    SchemaEntry, TableEntry,
+    ColumnInfo, ColumnMeta, ConnectionInfo, DumpStats, ExportRequest, FunctionEntry, IndexInfo,
+    QueryResult, RowCount, SchemaEntry, TableEntry,
 };
-use crate::drivers::Session;
+use crate::drivers::{DumpWriter, Session};
 use crate::error::{Error, Result};
 
 pub struct PgSession {
@@ -192,6 +195,28 @@ impl Session for PgSession {
             .await?;
         let _ = side.close().await;
         Ok(())
+    }
+
+    /// Dumps the requested relations over a connection of its own.
+    ///
+    /// Not the session's. A dump of a large table runs for minutes, and the
+    /// session's connection lives behind a mutex that every tab on this
+    /// connection takes — holding it for the length of an export would freeze
+    /// the window while the export is the one thing the user can watch. Opening
+    /// a second connection from the stored options is the same move `cancel`
+    /// already makes, and for the same reason.
+    async fn dump(
+        &self,
+        req: &ExportRequest,
+        out: &mut dyn DumpWriter,
+        cancel: &AtomicBool,
+    ) -> Result<DumpStats> {
+        let mut conn = PgConnection::connect_with(&self.options).await?;
+        let result = dump::run(&mut conn, req, out, cancel).await;
+        // Best effort: the export's own outcome is what the user is waiting on,
+        // and a socket that fails to close politely still closes.
+        let _ = conn.close().await;
+        result
     }
 
     /// Writes one cell, identified by the table's own primary key.

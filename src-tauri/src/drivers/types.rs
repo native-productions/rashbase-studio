@@ -225,6 +225,106 @@ pub struct FunctionEntry {
     pub kind: String,
 }
 
+// ---------------------------------------------------------------------------
+// Export
+// ---------------------------------------------------------------------------
+
+/// What the dumped file is written as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExportFormat {
+    Sql,
+    Csv,
+}
+
+/// How much of a relation goes into the dump.
+///
+/// A property of the export, not of each table: offering it per relation is
+/// what makes the usual export dialog a checkbox matrix nobody can read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExportMode {
+    /// Definitions only. No `insert` reaches the file.
+    Structure,
+    /// Rows only. Restores into a schema that already exists.
+    Data,
+    /// Both, in restore order.
+    Full,
+}
+
+impl ExportMode {
+    pub fn structure(self) -> bool {
+        matches!(self, ExportMode::Structure | ExportMode::Full)
+    }
+
+    pub fn data(self) -> bool {
+        matches!(self, ExportMode::Data | ExportMode::Full)
+    }
+}
+
+/// Whether the export lands as one file or one file per relation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExportLayout {
+    Single,
+    PerTable,
+}
+
+/// One relation the user asked for, as the sidebar knows it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObjectRef {
+    pub schema: String,
+    pub name: String,
+    /// Matches `TableEntry::kind`. Only `table` carries rows worth dumping: a
+    /// view's rows belong to its query, and a matview's come back with
+    /// `refresh`.
+    pub kind: String,
+}
+
+impl ObjectRef {
+    /// Whether rows of this relation are data in their own right.
+    pub fn has_own_rows(&self) -> bool {
+        self.kind == "table" || self.kind == "foreign" || self.kind == "other"
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportRequest {
+    pub objects: Vec<ObjectRef>,
+    pub format: ExportFormat,
+    pub mode: ExportMode,
+    /// Whether each relation is preceded by a `drop ... if exists`, which is
+    /// what makes a dump re-runnable against a database that already has it.
+    pub drop_if_exists: bool,
+    pub layout: ExportLayout,
+    pub compress: bool,
+    /// Chosen through the native folder picker, so it is a real path.
+    pub directory: String,
+    /// Without an extension. The backend appends one, because a name typed
+    /// with `.sql` already on it is how a file ends up called `x.sql.sql.gz`.
+    pub file_name: String,
+}
+
+/// What an export produced, for the sentence shown when it finishes.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportSummary {
+    pub path: String,
+    pub bytes: u64,
+    pub tables: usize,
+    pub rows: u64,
+    pub duration_ms: u64,
+}
+
+/// What one pass over the relations wrote.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DumpStats {
+    pub rows: u64,
+    pub tables: usize,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

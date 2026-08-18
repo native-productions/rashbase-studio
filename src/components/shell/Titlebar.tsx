@@ -8,6 +8,18 @@ const appWindow = getCurrentWindow();
 /**
  * macOS `titleBarStyle: "Overlay"` keeps the native traffic lights and hands us
  * the rest of the bar. `pl-traffic` reserves the space they occupy.
+ *
+ * The lights are moved down to the tab row, by `trafficLightPosition` in
+ * `tauri.conf.json`. They sit 14px from the top of the window by default,
+ * which is the middle of a 28px system titlebar and not the middle of
+ * anything in this bar: the tabs hang from the bottom of 44px, so their
+ * centre is at 27. Everything in this strip has to share one line with the
+ * lights or the strip reads as two rows that failed to line up.
+ *
+ * If either number below changes, `trafficLightPosition.y` changes with it.
+ * wry sets the titlebar container height to `12 + y` and pins it to the top of
+ * the window, and the 12px buttons keep their 8px offset inside it, so the
+ * light centre lands at `y - 2`. For a centre of 27, y is 29.
  */
 export function Titlebar() {
   const tabs = useApp((s) => s.tabs);

@@ -18,6 +18,7 @@ pub mod types;
 
 use async_trait::async_trait;
 use serde::Serialize;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 pub use registry::DbState;
@@ -42,6 +43,29 @@ pub struct Capabilities {
     pub row_edit: bool,
     /// Whether a running statement can be stopped from outside it.
     pub cancel: bool,
+    /// Whether relations can be dumped to a file.
+    pub export: bool,
+}
+
+/// Where a dump's bytes go, and how it says which relation it is on.
+///
+/// A trait rather than a writer, because the two output layouts differ only in
+/// what `begin` does: one file ignores it, one file per relation closes the
+/// previous file and opens the next. That difference belongs to the command
+/// layer, which owns the filesystem — the driver only knows what a dump of
+/// these relations should say.
+pub trait DumpWriter: Send {
+    /// Starts the part named for one relation.
+    ///
+    /// Called once per relation in the per-relation layout and never in the
+    /// single-file one, so a driver may call it unconditionally.
+    fn begin(&mut self, name: &str) -> std::io::Result<()>;
+
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<()>;
+
+    /// Reports which relation is being written and how far along the set is.
+    /// Advisory: a writer that shows nothing may ignore it.
+    fn progress(&mut self, table: &str, done: usize, total: usize);
 }
 
 /// A kind of database. One value per supported server, held in the registry.
@@ -88,6 +112,24 @@ pub trait Session: Send + Sync {
 
     async fn cancel(&self) -> Result<()> {
         Err(Error::Unsupported("cancelling a running statement"))
+    }
+
+    /// Writes the relations named by `req` into `out`.
+    ///
+    /// Runs on a connection of the driver's own, never the session's: a dump of
+    /// a large table takes minutes, and holding the session for that long would
+    /// wedge every tab pointed at the same connection.
+    ///
+    /// `cancel` is polled while rows stream. A driver that observes it set must
+    /// stop and return `Error::Cancelled` rather than finish quietly, because
+    /// the caller deletes what was written.
+    async fn dump(
+        &self,
+        _req: &ExportRequest,
+        _out: &mut dyn DumpWriter,
+        _cancel: &AtomicBool,
+    ) -> Result<DumpStats> {
+        Err(Error::Unsupported("exporting"))
     }
 
     async fn update_cell(

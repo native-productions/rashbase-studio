@@ -14,6 +14,7 @@ import { applyTranslucency, loadTranslucency, saveTranslucency } from "@/lib/tra
 import { isServerOnly } from "@/lib/utils/connections";
 import { editableReason, hasRows, tabColumns } from "@/lib/utils/tabs";
 import { rowKeysFor } from "@/lib/utils/rowKeys";
+import { rangeBetween, toggle as toggleKey } from "@/lib/utils/selection";
 import { pagedSql, unpageableReason } from "@/lib/utils/statement";
 import type {
   ConnectionConfig,
@@ -157,6 +158,22 @@ interface AppState {
   busy: Record<string, string>;
   toast: { kind: "error" | "info"; text: string } | null;
 
+  /**
+   * Which sidebar objects are picked, and where a range measures from.
+   *
+   * Keyed `schema.name` and scoped to one connection: a selection made in one
+   * database means nothing in another, and carrying it across would offer to
+   * export tables that are not there. Read only when `connectionId` matches
+   * the active one, which is why nothing has to clear it on disconnect.
+   */
+  selection: { connectionId: string | null; keys: string[]; anchor: string | null };
+  /**
+   * The connection an open export dialog belongs to, and the objects it opened
+   * with. `null` when the dialog is shut. The dialog owns everything after
+   * that, including which objects end up checked.
+   */
+  exportTarget: { connectionId: string; keys: string[] } | null;
+
   loadConnections: () => Promise<void>;
   connect: (config: ConnectionConfig, password?: string, sshSecret?: string) => Promise<void>;
   disconnect: (id: string) => Promise<void>;
@@ -217,6 +234,14 @@ interface AppState {
   toggleTranslucency: () => void;
   setPalette: (mode: PaletteMode | null) => void;
   setSheet: (open: boolean, editing?: ConnectionConfig | null, credentialLost?: boolean) => void;
+  /** A plain click: this row is where a range would start, and nothing is picked. */
+  anchorSelection: (connectionId: string, key: string) => void;
+  toggleSelected: (connectionId: string, key: string) => void;
+  /** `order` is the flat list of rows as drawn, so a range follows the eye. */
+  selectRange: (connectionId: string, order: string[], key: string) => void;
+  clearSelection: () => void;
+  setExportTarget: (target: AppState["exportTarget"]) => void;
+
   setToast: (toast: AppState["toast"]) => void;
 }
 
@@ -350,6 +375,8 @@ export const useApp = create<AppState>((set, get) => {
   cellView: null,
   busy: {},
   toast: null,
+  selection: { connectionId: null, keys: [], anchor: null },
+  exportTarget: null,
 
   loadConnections: async () => {
     try {
@@ -1132,6 +1159,31 @@ export const useApp = create<AppState>((set, get) => {
   // that hit it, and it sets the sheet itself.
   setSheet: (open, editing = null, credentialLost = false) =>
     set({ sheet: { open, editing, credentialLost, sshSecretLost: false } }),
+  anchorSelection: (connectionId, key) =>
+    set({ selection: { connectionId, keys: [], anchor: key } }),
+
+  toggleSelected: (connectionId, key) =>
+    set((s) => {
+      // A modifier click in a different connection starts a new selection
+      // rather than adding to one the user can no longer see.
+      const same = s.selection.connectionId === connectionId;
+      const keys = same ? toggleKey(s.selection.keys, key) : [key];
+      return { selection: { connectionId, keys, anchor: key } };
+    }),
+
+  selectRange: (connectionId, order, key) =>
+    set((s) => {
+      const same = s.selection.connectionId === connectionId;
+      const anchor = same ? s.selection.anchor : null;
+      return {
+        selection: { connectionId, keys: rangeBetween(order, anchor, key), anchor: anchor ?? key },
+      };
+    }),
+
+  clearSelection: () => set({ selection: { connectionId: null, keys: [], anchor: null } }),
+
+  setExportTarget: (exportTarget) => set({ exportTarget }),
+
   setToast: (toast) => set({ toast }),
   };
 });

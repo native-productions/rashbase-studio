@@ -66,6 +66,7 @@ function ObjectRow({
   object,
   viewing,
   open,
+  selected = false,
   indent,
   onOpen,
   onContextMenu,
@@ -73,22 +74,35 @@ function ObjectRow({
   object: SidebarMember & { schema: string };
   viewing: boolean;
   open: boolean;
+  /** Picked as part of a multi-row gesture, which is not the same as viewed. */
+  selected?: boolean;
   indent: string;
-  onOpen: () => void;
+  /** Carries the event: the modifiers are what separate picking from opening. */
+  onOpen: (e: React.MouseEvent) => void;
   onContextMenu: (e: React.MouseEvent) => void;
 }) {
+  // Three states share one row and have to stay tellable apart. Viewing keeps
+  // the wash it already had; selection is a bar in the gutter, which reads as
+  // "marked" rather than "here" and does not move the row the way a border
+  // would.
+  const tone = viewing
+    ? "bg-accent-wash text-ink"
+    : selected
+      ? "bg-hover text-ink"
+      : open
+        ? "text-ink hover:bg-hover"
+        : "text-ink-muted hover:bg-hover hover:text-ink";
+
   return (
     <button
       onClick={onOpen}
       onContextMenu={onContextMenu}
+      aria-selected={selected || undefined}
       title={object.signature ?? object.comment ?? `${object.kind} ${object.schema}.${object.name}`}
       className={[
         `flex w-full items-center gap-2 rounded py-0.5 pr-1.5 text-left text-[12px] ${indent}`,
-        viewing
-          ? "bg-accent-wash text-ink"
-          : open
-            ? "text-ink hover:bg-hover"
-            : "text-ink-muted hover:bg-hover hover:text-ink",
+        tone,
+        selected ? "shadow-[inset_2px_0_0_var(--color-accent)]" : "",
       ].join(" ")}
     >
       <span
@@ -153,6 +167,12 @@ export function Sidebar() {
   const openObjectTab = useApp((s) => s.openObjectTab);
   const openDatabase = useApp((s) => s.openDatabase);
   const setToast = useApp((s) => s.setToast);
+
+  const selection = useApp((s) => s.selection);
+  const anchorSelection = useApp((s) => s.anchorSelection);
+  const toggleSelected = useApp((s) => s.toggleSelected);
+  const selectRange = useApp((s) => s.selectRange);
+  const setExportTarget = useApp((s) => s.setExportTarget);
 
   const needle = filter.trim().toLowerCase();
   const activeSchemas = activeConnectionId ? (schemas[activeConnectionId] ?? []) : [];
@@ -229,6 +249,88 @@ export function Sidebar() {
     return out;
   }, [activeConnectionId, activeSchemas, functions, needle]);
 
+  /**
+   * Which rows are picked, ignored unless they belong to the connection on
+   * screen: a selection made in another database names tables that are not here.
+   */
+  const selectedKeys = useMemo(
+    () => new Set(selection.connectionId === activeConnectionId ? selection.keys : []),
+    [selection, activeConnectionId],
+  );
+
+  /**
+   * The selectable rows, top to bottom, exactly as drawn.
+   *
+   * A range has to follow the eye rather than the catalogue: with a filter
+   * typed or a group folded, the rows between two clicks are the visible ones,
+   * and a range built from the underlying list would quietly pick up tables the
+   * user cannot see.
+   */
+  const visibleOrder = useMemo(() => {
+    if (!activeConnectionId || serverOnly) return [];
+    const out: string[] = [];
+    for (const schema of activeSchemas) {
+      const key = `${activeConnectionId}::${schema.name}`;
+      if (!soleSchema && !expanded[key]) continue;
+      const list = visibleTables[schema.name] ?? [];
+      for (const group of OBJECT_GROUPS) {
+        const members = group.pick(list, visibleFunctions[schema.name] ?? []);
+        if (members.length === 0 || collapsedGroups[`${key}::${group.label}`]) continue;
+        for (const member of members) {
+          // Functions are in the tree but not in a selection: there is nothing
+          // to export, so including them would let a range pick up rows the
+          // export then silently drops.
+          if (member.kind !== "function") out.push(`${schema.name}.${member.name}`);
+        }
+      }
+    }
+    return out;
+  }, [
+    activeConnectionId,
+    serverOnly,
+    activeSchemas,
+    soleSchema,
+    expanded,
+    visibleTables,
+    visibleFunctions,
+    collapsedGroups,
+  ]);
+
+  /**
+   * What a click on an object row means.
+   *
+   * Plain opens it and marks where a range would start; the modifiers pick
+   * instead of opening, the way every file list works. Splitting them is what
+   * lets one row be both "the table I am looking at" and "one of four I am
+   * about to export".
+   */
+  function chooseObject(e: React.MouseEvent, object: SidebarMember & { schema: string }) {
+    if (!activeConnectionId) return;
+    if (object.kind !== "function") {
+      const key = `${object.schema}.${object.name}`;
+      if (e.metaKey || e.ctrlKey) {
+        toggleSelected(activeConnectionId, key);
+        return;
+      }
+      if (e.shiftKey) {
+        selectRange(activeConnectionId, visibleOrder, key);
+        return;
+      }
+      anchorSelection(activeConnectionId, key);
+    }
+    openObjectTab(activeConnectionId, object);
+  }
+
+  /** Right-clicking outside the selection resets it, as a file list does. */
+  function openMenu(e: React.MouseEvent, object: DbObject) {
+    e.preventDefault();
+    if (activeConnectionId && object.kind !== "function") {
+      const key = `${object.schema}.${object.name}`;
+      if (!selectedKeys.has(key)) anchorSelection(activeConnectionId, key);
+    }
+    setMenu({ x: e.clientX, y: e.clientY, object });
+  }
+
   function chooseConnection(id: string) {
     const target = connMenu?.config;
     setConnMenu(null);
@@ -243,6 +345,16 @@ export function Sidebar() {
     const target = menu?.object;
     setMenu(null);
     if (!target || !activeConnectionId) return;
+
+    // Handled here rather than in `runObjectMenuAction`, which knows about
+    // statements and clipboards and nothing about the workspace.
+    if (id === "export") {
+      const keys =
+        selectedKeys.size > 0 ? [...selectedKeys] : [`${target.schema}.${target.name}`];
+      setExportTarget({ connectionId: activeConnectionId, keys });
+      return;
+    }
+
     try {
       const { pending, copied } = await runObjectMenuAction(id, activeConnectionId, target);
       if (pending) setPending(pending);
@@ -448,17 +560,10 @@ export function Sidebar() {
                         open={openTables.has(
                           `${activeConnectionId}::${CLUSTER_SCHEMA}.${object.name}`,
                         )}
-                        onOpen={() =>
-                          openObjectTab(activeConnectionId, { ...object, schema: CLUSTER_SCHEMA })
+                        onOpen={(e) => chooseObject(e, { ...object, schema: CLUSTER_SCHEMA })}
+                        onContextMenu={(e) =>
+                          openMenu(e, { ...object, schema: CLUSTER_SCHEMA })
                         }
-                        onContextMenu={(e) => {
-                          e.preventDefault();
-                          setMenu({
-                            x: e.clientX,
-                            y: e.clientY,
-                            object: { ...object, schema: CLUSTER_SCHEMA },
-                          });
-                        }}
                       />
                     ))
                   ))}
@@ -514,17 +619,9 @@ export function Sidebar() {
                                   `${activeConnectionId}::${s.name}.${object.name}` === viewedTable
                                 }
                                 open={openTables.has(`${activeConnectionId}::${s.name}.${object.name}`)}
-                                onOpen={() =>
-                                  openObjectTab(activeConnectionId, { ...object, schema: s.name })
-                                }
-                                onContextMenu={(e) => {
-                                  e.preventDefault();
-                                  setMenu({
-                                    x: e.clientX,
-                                    y: e.clientY,
-                                    object: { ...object, schema: s.name },
-                                  });
-                                }}
+                                selected={selectedKeys.has(`${s.name}.${object.name}`)}
+                                onOpen={(e) => chooseObject(e, { ...object, schema: s.name })}
+                                onContextMenu={(e) => openMenu(e, { ...object, schema: s.name })}
                               />
                             ))}
                           </div>
@@ -550,7 +647,7 @@ export function Sidebar() {
         <ContextMenu
           x={menu.x}
           y={menu.y}
-          items={objectMenuItems(menu.object)}
+          items={objectMenuItems(menu.object, Math.max(1, selectedKeys.size))}
           onSelect={(id) => void choose(id)}
           onClose={() => setMenu(null)}
         />
