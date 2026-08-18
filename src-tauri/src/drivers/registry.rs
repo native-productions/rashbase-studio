@@ -13,7 +13,7 @@ use tokio::sync::RwLock;
 use crate::drivers::postgres::PgDriver;
 use crate::drivers::types::{
     ColumnInfo, ConnectionConfig, ConnectionInfo, DumpStats, ExportRequest, FunctionEntry,
-    IndexInfo, QueryResult, RowCount, SchemaEntry, TableEntry,
+    IndexInfo, QueryResult, RowCount, SchemaEntry, SchemaGraph, TableEntry,
 };
 use crate::drivers::{Driver, DumpWriter, Session};
 use crate::error::{Error, Result};
@@ -210,6 +210,10 @@ impl DbState {
         table: &str,
     ) -> Result<Vec<ColumnInfo>> {
         self.session(id).await?.list_columns(schema, table).await
+    }
+
+    pub async fn schema_graph(&self, id: &str, schema: &str) -> Result<SchemaGraph> {
+        self.session(id).await?.schema_graph(schema).await
     }
 
     pub async fn list_indexes(

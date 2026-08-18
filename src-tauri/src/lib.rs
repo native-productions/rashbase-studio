@@ -2,6 +2,8 @@ mod commands;
 pub mod drivers;
 mod error;
 mod keychain;
+#[cfg(target_os = "macos")]
+mod menu;
 mod ssh;
 
 use drivers::DbState;
@@ -13,6 +15,14 @@ pub fn run() {
         // `<input type="file">` hands back a sandboxed handle and never a real
         // path, and a path is the whole point here.
         .plugin(tauri_plugin_dialog::init())
+        .setup(|_app| {
+            // The menu bar is the third way into the same command registry the
+            // palette and the keyboard layer use, so it adds entries and never
+            // behaviour.
+            #[cfg(target_os = "macos")]
+            menu::install(_app)?;
+            Ok(())
+        })
         .manage(DbState::default())
         .invoke_handler(tauri::generate_handler![
             commands::list_connections,
@@ -34,6 +44,7 @@ pub fn run() {
             commands::count_rows,
             commands::list_columns,
             commands::list_indexes,
+            commands::schema_graph,
             commands::list_functions,
             commands::function_definition,
             commands::view_definition,

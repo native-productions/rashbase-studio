@@ -12,12 +12,14 @@ import { FilterBar } from "@/components/table/FilterBar";
 import { TableFooter } from "@/components/table/TableFooter";
 import { QueryFooter } from "@/components/query/QueryFooter";
 import { StructureView } from "@/components/table/StructureView";
+import { ErdView } from "@/components/erd/ErdView";
 import { DefinitionView } from "@/components/table/DefinitionView";
 import { CommandPalette } from "@/components/palette/CommandPalette";
 import { ConnectionSheet } from "@/components/connection/ConnectionSheet";
 import { ExportDialog } from "@/components/export/ExportDialog";
 import { Logo } from "@/components/Logo";
 import { useHotkeys } from "@/lib/hotkeys";
+import { useAppMenu } from "@/lib/appMenu";
 import { hasRows } from "@/lib/utils/tabs";
 import { savePinnedTabs } from "@/lib/pinnedTabs";
 import { activeTab, useApp } from "@/store/app";
@@ -59,6 +61,7 @@ function EmptyState() {
 
 export default function App() {
   useHotkeys();
+  useAppMenu();
 
   const loadConnections = useApp((s) => s.loadConnections);
   const sidebarVisible = useApp((s) => s.sidebarVisible);
@@ -201,7 +204,9 @@ export default function App() {
 
               <div className="flex min-h-0 flex-1">
                 <div className="min-w-0 flex-1">
-                  {tab.object && tab.view === "structure" ? (
+                  {tab.object?.kind === "diagram" ? (
+                    <ErdView tab={tab} />
+                  ) : tab.object && tab.view === "structure" ? (
                     <StructureView tab={tab} />
                   ) : tab.object && tab.view === "definition" ? (
                     <DefinitionView tab={tab} />

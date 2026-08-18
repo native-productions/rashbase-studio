@@ -25,6 +25,13 @@ import type { DbObject, StatementColumn } from "@/lib/types";
  * menu that does not describe itself.
  */
 export function objectMenuItems(object: DbObject, selectedCount = 1): ContextMenuItem[] {
+  // A schema is not a relation: it has no name to copy as a statement, nothing
+  // to dump, and nothing to drop from here. The one thing you can do with it
+  // is look at its shape.
+  if (object.kind === "diagram") {
+    return [{ kind: "item", id: "diagram.open", label: "Show diagram" }];
+  }
+
   const isFunction = object.kind === "function";
   const isTable = object.kind === "table";
 

@@ -153,6 +153,50 @@ export interface IndexInfo {
   primary: boolean;
 }
 
+/**
+ * One relation as the diagram draws it.
+ *
+ * Thinner than `ColumnInfo` on purpose: a schema graph carries every column of
+ * every relation at once, and the fields it drops — default, comment, enum
+ * labels — are only ever wanted for the one relation the user clicked. Those
+ * arrive from `listColumns` when the metadata panel opens.
+ */
+export interface GraphColumn {
+  name: string;
+  dataType: string;
+  notNull: boolean;
+  primaryKey: boolean;
+}
+
+export interface GraphTable {
+  name: string;
+  kind: TableEntry["kind"];
+  comment: string | null;
+  columns: GraphColumn[];
+}
+
+/**
+ * One foreign key, as an edge rather than as DDL.
+ *
+ * `columns` and `refColumns` are positional: the nth referencing column points
+ * at the nth referenced one, which is what makes a composite key readable.
+ * `refSchema` may not be the schema being drawn — the backend reports the key
+ * wherever it points, and the diagram decides what to do about one that leaves.
+ */
+export interface Relation {
+  name: string;
+  table: string;
+  columns: string[];
+  refSchema: string;
+  refTable: string;
+  refColumns: string[];
+}
+
+export interface SchemaGraph {
+  tables: GraphTable[];
+  relations: Relation[];
+}
+
 /** The single error shape every command rejects with. */
 export interface DbError {
   message: string;
@@ -265,7 +309,12 @@ export type PaletteMode = "commands" | "tables" | "databases";
 export interface DbObject {
   schema: string;
   name: string;
-  kind: TableEntry["kind"] | "function";
+  /**
+   * `"diagram"` is the schema itself rather than something inside it: an ERD
+   * tab is an object tab whose object is the whole schema, which is what lets
+   * it reuse tab dedupe, the tab strip, and pinning without a second tab kind.
+   */
+  kind: TableEntry["kind"] | "function" | "diagram";
   /** Functions only. They are keyed by oid because overloads share a name. */
   oid?: number;
 }
@@ -300,7 +349,7 @@ export interface QueryTab {
   /** ANDed. Server-side like the paging, so a filter reaches the whole table. */
   filters: Filter[];
   rowCount: RowCount | null;
-  view: "data" | "structure" | "definition";
+  view: "data" | "structure" | "definition" | "diagram";
   /**
    * Fetched when a row-bearing tab opens, not when the Structure view is
    * looked at: editing needs the primary key and the column types before the
@@ -309,6 +358,12 @@ export interface QueryTab {
   columns: ColumnInfo[] | null;
   /** Structure view only, so it stays where it was: fetched on first look. */
   indexes: IndexInfo[] | null;
+  /**
+   * Diagram tabs only: every relation in the schema and the keys between them,
+   * fetched once when the tab opens. Held on the tab rather than in a shared
+   * cache so closing the tab is what forgets it.
+   */
+  graph: SchemaGraph | null;
   /** Which cell the grid, the row panel, and the cell editor all point at. */
   selection: { row: number; col: number } | null;
   /** Source of a view or function, fetched the first time it is looked at. */

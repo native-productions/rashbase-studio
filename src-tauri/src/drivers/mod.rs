@@ -165,6 +165,16 @@ pub trait Session: Send + Sync {
         Err(Error::Unsupported("listing indexes"))
     }
 
+    /// Every relation in the schema with its columns, plus the foreign keys
+    /// between them, in one call.
+    ///
+    /// Its own method rather than a loop over `list_columns` in the caller: the
+    /// caller cannot batch what it asks for one relation at a time, and a
+    /// driver that can answer this in a single statement should be allowed to.
+    async fn schema_graph(&self, _schema: &str) -> Result<SchemaGraph> {
+        Err(Error::Unsupported("reading a schema diagram"))
+    }
+
     async fn list_functions(&self, _schema: &str) -> Result<Vec<FunctionEntry>> {
         Err(Error::Unsupported("listing functions"))
     }

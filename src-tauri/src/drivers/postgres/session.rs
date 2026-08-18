@@ -22,7 +22,7 @@ use crate::drivers::postgres::sql::build_update;
 use crate::drivers::postgres::types::classify;
 use crate::drivers::types::{
     ColumnInfo, ColumnMeta, ConnectionInfo, DumpStats, ExportRequest, FunctionEntry, IndexInfo,
-    QueryResult, RowCount, SchemaEntry, TableEntry,
+    QueryResult, RowCount, SchemaEntry, SchemaGraph, TableEntry,
 };
 use crate::drivers::{DumpWriter, Session};
 use crate::error::{Error, Result};
@@ -332,6 +332,11 @@ impl Session for PgSession {
     async fn list_columns(&self, schema: &str, table: &str) -> Result<Vec<ColumnInfo>> {
         let mut guard = self.conn.lock().await;
         catalog::list_columns(self.live(&mut guard)?, schema, table).await
+    }
+
+    async fn schema_graph(&self, schema: &str) -> Result<SchemaGraph> {
+        let mut guard = self.conn.lock().await;
+        catalog::schema_graph(self.live(&mut guard)?, schema).await
     }
 
     async fn list_indexes(&self, schema: &str, table: &str) -> Result<Vec<IndexInfo>> {

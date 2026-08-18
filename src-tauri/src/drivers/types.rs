@@ -225,6 +225,62 @@ pub struct FunctionEntry {
     pub kind: String,
 }
 
+/// One relation as the diagram draws it.
+///
+/// Deliberately thinner than `ColumnInfo`: a schema graph carries every column
+/// of every relation at once, and `default`, `comment`, and `enum_values` are
+/// only ever wanted for the one relation the user clicked. Those come back from
+/// `list_columns` on demand, which keeps a hundred-table schema from paying for
+/// three fields it will not draw.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphColumn {
+    pub name: String,
+    pub data_type: String,
+    pub not_null: bool,
+    pub primary_key: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphTable {
+    pub name: String,
+    /// Matches `TableEntry::kind`.
+    pub kind: String,
+    pub comment: Option<String>,
+    pub columns: Vec<GraphColumn>,
+}
+
+/// One foreign key, as an edge rather than as DDL.
+///
+/// `columns` and `ref_columns` are positional: the nth referencing column
+/// points at the nth referenced one, which is the only thing that makes a
+/// composite key readable. `ref_schema` is reported even when it is the schema
+/// being drawn, because the caller decides what to do about a reference that
+/// leaves it and cannot decide that without being told.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Relation {
+    pub name: String,
+    pub table: String,
+    pub columns: Vec<String>,
+    pub ref_schema: String,
+    pub ref_table: String,
+    pub ref_columns: Vec<String>,
+}
+
+/// Everything one diagram needs, in one reply.
+///
+/// The shape exists because the alternative is `list_columns` once per
+/// relation: eighty tables would be eighty round trips through the session's
+/// mutex, serialized behind each other, to draw a single view.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchemaGraph {
+    pub tables: Vec<GraphTable>,
+    pub relations: Vec<Relation>,
+}
+
 // ---------------------------------------------------------------------------
 // Export
 // ---------------------------------------------------------------------------
@@ -392,5 +448,44 @@ mod tests {
         // The optional fields fall back without needing to be written out.
         assert!(config.environment.is_none());
         assert!(config.parent_id.is_none());
+    }
+
+    /// The diagram reads these field names straight off the wire. A snake_case
+    /// key here is not a compile error on either side: the frontend simply sees
+    /// `undefined` and draws a graph with no types and no edges.
+    #[test]
+    fn sends_the_schema_graph_in_the_case_the_frontend_reads() {
+        let graph = SchemaGraph {
+            tables: vec![GraphTable {
+                name: "orders".into(),
+                kind: "table".into(),
+                comment: None,
+                columns: vec![GraphColumn {
+                    name: "id".into(),
+                    data_type: "uuid".into(),
+                    not_null: true,
+                    primary_key: true,
+                }],
+            }],
+            relations: vec![Relation {
+                name: "orders_user_id_fkey".into(),
+                table: "orders".into(),
+                columns: vec!["user_id".into()],
+                ref_schema: "public".into(),
+                ref_table: "users".into(),
+                ref_columns: vec!["id".into()],
+            }],
+        };
+
+        let json = serde_json::to_value(&graph).unwrap();
+        let column = &json["tables"][0]["columns"][0];
+        assert_eq!(column["dataType"], "uuid");
+        assert_eq!(column["notNull"], true);
+        assert_eq!(column["primaryKey"], true);
+
+        let relation = &json["relations"][0];
+        assert_eq!(relation["refSchema"], "public");
+        assert_eq!(relation["refTable"], "users");
+        assert_eq!(relation["refColumns"][0], "id");
     }
 }

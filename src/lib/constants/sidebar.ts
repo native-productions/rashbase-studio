@@ -7,6 +7,7 @@ export const KIND_GLYPH: Record<DbObject["kind"], string> = {
   foreign: "◈",
   other: "▫",
   function: "ƒ",
+  diagram: "◇",
 };
 
 /** Schema-less object, before the schema it lives in is attached. */

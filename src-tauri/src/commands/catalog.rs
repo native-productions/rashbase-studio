@@ -2,7 +2,9 @@
 
 use tauri::State;
 
-use crate::drivers::{ColumnInfo, DbState, FunctionEntry, IndexInfo, RowCount, SchemaEntry, TableEntry};
+use crate::drivers::{
+    ColumnInfo, DbState, FunctionEntry, IndexInfo, RowCount, SchemaEntry, SchemaGraph, TableEntry,
+};
 use crate::error::Result;
 
 /// Databases on this session's server that the connected role can open.
@@ -66,6 +68,18 @@ pub async fn list_indexes(
     table: String,
 ) -> Result<Vec<IndexInfo>> {
     db.list_indexes(&id, &schema, &table).await
+}
+
+/// Every relation in the schema with its columns, and the foreign keys between
+/// them. One call, because the diagram needs all of it before it can draw
+/// anything.
+#[tauri::command]
+pub async fn schema_graph(
+    db: State<'_, DbState>,
+    id: String,
+    schema: String,
+) -> Result<SchemaGraph> {
+    db.schema_graph(&id, &schema).await
 }
 
 #[tauri::command]

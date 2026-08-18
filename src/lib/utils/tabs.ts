@@ -1,10 +1,19 @@
 import type { ColumnInfo, DbObject, QueryTab } from "@/lib/types";
 
-/** Tables and views have rows; a function is only ever its source. */
-export const hasRows = (o: DbObject | null): boolean => o !== null && o.kind !== "function";
+/**
+ * Tables and views have rows; a function is only ever its source, and a
+ * diagram is the schema rather than anything in it.
+ *
+ * The one place that answers this. Everything downstream — whether a tab gets
+ * an editor, a pager, a filter bar, a `select` to run, a column fetch — is
+ * gated on it, so a kind that has no rows only has to say so once.
+ */
+export const hasRows = (o: DbObject | null): boolean =>
+  o !== null && o.kind !== "function" && o.kind !== "diagram";
 
 export function viewsFor(object: DbObject | null): QueryTab["view"][] {
   if (!object) return [];
+  if (object.kind === "diagram") return ["diagram"];
   if (object.kind === "function") return ["definition"];
   if (object.kind === "view" || object.kind === "matview") {
     return ["data", "structure", "definition"];

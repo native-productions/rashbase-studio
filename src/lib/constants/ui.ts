@@ -55,4 +55,5 @@ export const VIEW_LABEL: Record<QueryTab["view"], string> = {
   data: "Data",
   structure: "Structure",
   definition: "Definition",
+  diagram: "Diagram",
 };

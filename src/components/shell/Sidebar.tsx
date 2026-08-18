@@ -5,6 +5,7 @@ import type {
   DbObject,
   FunctionEntry,
   QueryTab,
+  SchemaEntry,
   TableEntry,
 } from "@/lib/types";
 import { ContextMenu, type ContextMenuItem } from "@/components/ui/ContextMenu";
@@ -32,6 +33,7 @@ function DisclosureRow({
   indent,
   labelClass = "",
   onToggle,
+  onContextMenu,
 }: {
   label: string;
   open: boolean;
@@ -40,10 +42,13 @@ function DisclosureRow({
   indent: string;
   labelClass?: string;
   onToggle: () => void;
+  /** Absent on the group rows, which have nothing of their own to act on. */
+  onContextMenu?: (e: React.MouseEvent) => void;
 }) {
   return (
     <button
       onClick={onToggle}
+      onContextMenu={onContextMenu}
       aria-expanded={open}
       aria-busy={busy || undefined}
       className={`flex w-full items-center gap-1 rounded py-1 pr-1.5 text-left text-[12px] text-ink-muted hover:bg-hover ${indent}`}
@@ -120,15 +125,45 @@ function ObjectRow({
  * What a connection row offers.
  *
  * Connecting is what a click already does, so the menu carries only what a
- * click cannot: closing the session, and removing the connection.
+ * click cannot: drawing a schema, closing the session, and removing the
+ * connection.
+ *
+ * The diagram lives here and not only on the schema row because the schema row
+ * is not always drawn: a database with a single schema has no choice to make,
+ * so it gets no row — which is exactly the shape most Postgres databases have,
+ * and would leave the gesture unreachable on all of them. With more than one
+ * schema the entry becomes a submenu, because then there is a question to
+ * answer and the menu is where to answer it.
  */
-function connectionMenuItems(live: boolean): ContextMenuItem[] {
+function connectionMenuItems(live: boolean, schemas: SchemaEntry[]): ContextMenuItem[] {
+  const diagram: ContextMenuItem[] = !live
+    ? []
+    : schemas.length === 1
+      ? [{ kind: "item", id: `${DIAGRAM_PREFIX}${schemas[0]!.name}`, label: "Show diagram" }]
+      : schemas.length > 1
+        ? [
+            {
+              kind: "submenu",
+              label: "Show diagram",
+              items: schemas.map((schema) => ({
+                id: `${DIAGRAM_PREFIX}${schema.name}`,
+                label: schema.name,
+              })),
+            },
+          ]
+        : [];
+
   return [
+    ...diagram,
+    ...(diagram.length > 0 ? ([{ kind: "separator" }] as ContextMenuItem[]) : []),
     ...(live ? ([{ kind: "item", id: "disconnect", label: "Disconnect" }] as ContextMenuItem[]) : []),
     ...(live ? ([{ kind: "separator" }] as ContextMenuItem[]) : []),
     { kind: "item", id: "delete", label: "Delete connection…", danger: true },
   ];
 }
+
+/** A schema name can be anything, so the id carries it behind a fixed prefix. */
+const DIAGRAM_PREFIX = "diagram:";
 
 export function Sidebar() {
   const [filter, setFilter] = useState("");
@@ -324,7 +359,9 @@ export function Sidebar() {
   /** Right-clicking outside the selection resets it, as a file list does. */
   function openMenu(e: React.MouseEvent, object: DbObject) {
     e.preventDefault();
-    if (activeConnectionId && object.kind !== "function") {
+    // A schema is not part of the object selection, so right-clicking one must
+    // not clear what the user had picked out of the tree.
+    if (activeConnectionId && object.kind !== "function" && object.kind !== "diagram") {
       const key = `${object.schema}.${object.name}`;
       if (!selectedKeys.has(key)) anchorSelection(activeConnectionId, key);
     }
@@ -335,6 +372,11 @@ export function Sidebar() {
     const target = connMenu?.config;
     setConnMenu(null);
     if (!target) return;
+    if (id.startsWith(DIAGRAM_PREFIX)) {
+      const schema = id.slice(DIAGRAM_PREFIX.length);
+      openObjectTab(target.id, { schema, name: schema, kind: "diagram" });
+      return;
+    }
     if (id === "disconnect") void disconnect(target.id);
     // Deleting takes the stored password and any derived connection with it,
     // so it goes in front of the user first.
@@ -348,6 +390,11 @@ export function Sidebar() {
 
     // Handled here rather than in `runObjectMenuAction`, which knows about
     // statements and clipboards and nothing about the workspace.
+    if (id === "diagram.open") {
+      openObjectTab(activeConnectionId, target);
+      return;
+    }
+
     if (id === "export") {
       const keys =
         selectedKeys.size > 0 ? [...selectedKeys] : [`${target.schema}.${target.name}`];
@@ -584,6 +631,9 @@ export function Sidebar() {
                       busy={!!busy[busyKey.schema(activeConnectionId, s.name)]}
                       indent="pl-1.5"
                       onToggle={() => void toggleSchema(activeConnectionId, s.name)}
+                      onContextMenu={(e) =>
+                        openMenu(e, { schema: s.name, name: s.name, kind: "diagram" })
+                      }
                     />
                   )}
 
@@ -657,7 +707,10 @@ export function Sidebar() {
         <ContextMenu
           x={connMenu.x}
           y={connMenu.y}
-          items={connectionMenuItems(!!open[connMenu.config.id])}
+          items={connectionMenuItems(
+            !!open[connMenu.config.id],
+            schemas[connMenu.config.id] ?? [],
+          )}
           onSelect={chooseConnection}
           onClose={() => setConnMenu(null)}
         />

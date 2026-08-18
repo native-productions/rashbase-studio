@@ -207,6 +207,34 @@ export const COMMANDS: Command[] = [
     },
   },
   {
+    id: "view.diagram",
+    label: "Show schema diagram",
+    group: "View",
+    keys: "⌘D",
+    // Enabled on any open connection rather than only when the schema is
+    // known. This id is also a native menu item, and a menu entry that greys
+    // itself out is a worse answer than one that says which gesture to use.
+    enabled: () => {
+      const id = s().activeConnectionId;
+      return !!id && !!s().open[id];
+    },
+    run: () => {
+      const target = diagramSchema();
+      if (!target) {
+        s().setToast({
+          kind: "info",
+          text: "Right-click a connection in the sidebar to pick which schema to draw.",
+        });
+        return;
+      }
+      s().openObjectTab(target.connectionId, {
+        schema: target.schema,
+        name: target.schema,
+        kind: "diagram",
+      });
+    },
+  },
+  {
     id: "view.tables",
     label: "Go to table",
     group: "View",
@@ -220,6 +248,28 @@ export const COMMANDS: Command[] = [
     },
   },
 ];
+
+/**
+ * Which schema "show me the diagram" means, or null when it is ambiguous.
+ *
+ * The tab you are looking at first — asking for a diagram while a table is open
+ * almost always means that table's schema — and otherwise the connection's only
+ * schema. With several schemas and nothing open there is no answer worth
+ * guessing at, so the command goes dim and the sidebar's right-click is where
+ * you say which one.
+ */
+function diagramSchema(): { connectionId: string; schema: string } | null {
+  const connectionId = s().activeConnectionId;
+  if (!connectionId) return null;
+
+  const open = activeTab(s());
+  if (open?.connectionId === connectionId && open.object) {
+    return { connectionId, schema: open.object.schema };
+  }
+
+  const schemas = s().schemas[connectionId] ?? [];
+  return schemas.length === 1 ? { connectionId, schema: schemas[0]!.name } : null;
+}
 
 export const COMMANDS_BY_ID = new Map(COMMANDS.map((c) => [c.id, c]));
 

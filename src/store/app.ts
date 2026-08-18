@@ -47,9 +47,11 @@ function newTab(connectionId: string | null, object: DbObject | null = null): Qu
     sort: null,
     filters: [],
     rowCount: null,
-    view: hasRows(object) ? "data" : "definition",
+    view:
+      object?.kind === "diagram" ? "diagram" : hasRows(object) ? "data" : "definition",
     columns: null,
     indexes: null,
+    graph: null,
     selection: null,
     definition: null,
     sql: hasRows(object)
@@ -214,6 +216,8 @@ interface AppState {
   countExactRows: (tabId: string) => Promise<void>;
   ensureColumns: (tabId: string) => Promise<void>;
   setTabView: (tabId: string, view: QueryTab["view"]) => Promise<void>;
+  /** Fetches a diagram tab's schema graph. No-op on any other kind of tab. */
+  loadSchemaGraph: (tabId: string) => Promise<void>;
 
   setSelection: (tabId: string, selection: QueryTab["selection"]) => void;
   selectCell: (tabId: string, row: number, col: number) => void;
@@ -258,6 +262,7 @@ export const busyKey = {
   connect: (connectionId: string) => `connect:${connectionId}`,
   database: (connectionId: string, name: string) => `database:${connectionId}::${name}`,
   schema: (connectionId: string, schema: string) => `schema:${connectionId}::${schema}`,
+  diagram: (connectionId: string, schema: string) => `diagram:${connectionId}::${schema}`,
   tables: (connectionId: string) => `tables:${connectionId}`,
   databases: (connectionId: string) => `databases:${connectionId}`,
 };
@@ -717,15 +722,22 @@ export const useApp = create<AppState>((set, get) => {
     // than stacking a second copy of the same thing.
     if (existing) {
       set({ activeTabId: existing.id });
-      // A tab that already existed still needs its definition: without it
-      // `editableReason` says "reading" forever and every double click is a
-      // silent no-op.
+      // Both are idempotent, and each is a no-op on the kind of tab it does
+      // not describe. A reopened tab whose first fetch failed is the case
+      // that matters: it gets another attempt rather than staying blank.
       void get().ensureColumns(existing.id);
+      void get().loadSchemaGraph(existing.id);
       return;
     }
     const tab = newTab(connectionId, object);
     set((s) => ({ tabs: [...s.tabs, tab], activeTabId: tab.id }));
 
+    // A diagram is the schema, not a relation in it: there is no page of rows
+    // to fetch and no definition to read, only the graph it draws.
+    if (object.kind === "diagram") {
+      void get().loadSchemaGraph(tab.id);
+      return;
+    }
     if (!hasRows(object)) {
       void get().setTabView(tab.id, "definition");
       return;
@@ -764,6 +776,32 @@ export const useApp = create<AppState>((set, get) => {
       patchTab(tabId, { columns });
     } catch {
       /* The tab still reads. The next attempt to edit asks again. */
+    }
+  },
+
+  /**
+   * Loads a diagram tab's graph if it does not have one yet.
+   *
+   * Idempotent like `ensureColumns`, and for the same reason: a tab reaches the
+   * canvas through more than one door. The guard is `graph === null` rather
+   * than a flag, so a fetch that failed is retried the next time the tab is
+   * opened instead of leaving an empty canvas that never explains itself.
+   */
+  loadSchemaGraph: async (tabId) => {
+    const tab = get().tabs.find((t) => t.id === tabId);
+    const object = tab?.object;
+    if (!tab || !object || !tab.connectionId || tab.graph) return;
+    if (object.kind !== "diagram") return;
+    const connectionId = tab.connectionId;
+    try {
+      const graph = await track(
+        busyKey.diagram(connectionId, object.schema),
+        `Reading ${object.schema}…`,
+        () => ipc.schemaGraph(connectionId, object.schema),
+      );
+      patchTab(tabId, { graph });
+    } catch (e) {
+      set({ toast: { kind: "error", text: asDbError(e).message } });
     }
   },
 

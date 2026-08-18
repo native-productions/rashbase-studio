@@ -22,6 +22,7 @@ import type {
   RowCount,
   RowKey,
   SchemaEntry,
+  SchemaGraph,
   TableEntry,
 } from "@/lib/types";
 
@@ -131,6 +132,15 @@ export const ipc = {
 
   listIndexes: (id: string, schema: string, table: string) =>
     invoke<IndexInfo[]>("list_indexes", { id, schema, table }),
+
+  /**
+   * Every relation in the schema with its columns, plus the foreign keys
+   * between them. One call rather than `listColumns` per relation: eighty
+   * tables would be eighty round trips serialized behind the session's lock,
+   * to draw a single view.
+   */
+  schemaGraph: (id: string, schema: string) =>
+    invoke<SchemaGraph>("schema_graph", { id, schema }),
 
   listFunctions: (id: string, schema: string) =>
     invoke<FunctionEntry[]>("list_functions", { id, schema }),

@@ -5,12 +5,15 @@
 //! of these runs while that lock is already held. Taking the connection as an
 //! argument is what keeps `update_cell` from deadlocking against itself.
 
+use std::collections::HashMap;
+
 use sqlx::postgres::PgConnection;
 use sqlx::Row;
 
 use crate::drivers::postgres::sql::quote_ident;
 use crate::drivers::types::{
-    ColumnInfo, FunctionEntry, IndexInfo, RowCount, SchemaEntry, TableEntry,
+    ColumnInfo, FunctionEntry, GraphColumn, GraphTable, IndexInfo, Relation, RowCount,
+    SchemaEntry, SchemaGraph, TableEntry,
 };
 use crate::error::{Error, Result};
 
@@ -195,6 +198,142 @@ pub async fn list_columns(
             })
         })
         .collect()
+}
+
+/// Every column of every relation in the schema, in one statement.
+///
+/// The same shape as `list_columns` with the relation predicate dropped and the
+/// enum lookup removed. Both differences are the point: the diagram wants all
+/// of them at once and none of the enum labels, and the correlated `array_agg`
+/// that is cheap for one relation is paid per column here.
+///
+/// Returned paired with the relation name because the caller is about to group
+/// by it, and a `GraphColumn` on its own cannot say where it came from.
+async fn schema_columns(
+    conn: &mut PgConnection,
+    schema: &str,
+) -> Result<Vec<(String, GraphColumn)>> {
+    let rows = sqlx::query(
+        r#"
+        select c.relname,
+               a.attname,
+               pg_catalog.format_type(a.atttypid, a.atttypmod),
+               a.attnotnull,
+               coalesce(pk.iskey, false)
+        from pg_catalog.pg_attribute a
+        join pg_catalog.pg_class c on c.oid = a.attrelid
+        join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+        left join lateral (
+            select true as iskey
+            from pg_catalog.pg_constraint k
+            where k.conrelid = a.attrelid
+              and k.contype = 'p'
+              and a.attnum = any(k.conkey)
+        ) pk on true
+        where n.nspname = $1
+          and c.relkind in ('r', 'p', 'v', 'm', 'f')
+          and a.attnum > 0
+          and not a.attisdropped
+        order by c.relname, a.attnum
+        "#,
+    )
+    .bind(schema)
+    .fetch_all(&mut *conn)
+    .await?;
+    rows.into_iter()
+        .map(|r| {
+            Ok((
+                r.try_get::<String, _>(0)?,
+                GraphColumn {
+                    name: r.try_get::<String, _>(1)?,
+                    data_type: r.try_get::<String, _>(2)?,
+                    not_null: r.try_get::<bool, _>(3)?,
+                    primary_key: r.try_get::<bool, _>(4)?,
+                },
+            ))
+        })
+        .collect()
+}
+
+/// Foreign keys declared by relations in this schema.
+///
+/// `conkey` and `confkey` are attribute numbers, and their order is what pairs
+/// a composite key's columns with the ones they point at. `with ordinality` is
+/// what preserves that order: without it the join to `pg_attribute` returns the
+/// names in whatever order the planner liked, and a two-column key silently
+/// reads as pointing at the wrong pair.
+///
+/// The `confrelid` side is not filtered by schema. A key that leaves the schema
+/// is still a fact about the relation that declared it, and dropping it here
+/// would leave the caller unable to tell "no reference" from "a reference you
+/// cannot draw".
+async fn foreign_keys(conn: &mut PgConnection, schema: &str) -> Result<Vec<Relation>> {
+    let rows = sqlx::query(
+        r#"
+        select con.conname,
+               cl.relname,
+               (select array_agg(a.attname order by k.ord)
+                  from unnest(con.conkey) with ordinality k(attnum, ord)
+                  join pg_catalog.pg_attribute a
+                    on a.attrelid = con.conrelid and a.attnum = k.attnum),
+               fns.nspname,
+               fcl.relname,
+               (select array_agg(a.attname order by k.ord)
+                  from unnest(con.confkey) with ordinality k(attnum, ord)
+                  join pg_catalog.pg_attribute a
+                    on a.attrelid = con.confrelid and a.attnum = k.attnum)
+        from pg_catalog.pg_constraint con
+        join pg_catalog.pg_class cl on cl.oid = con.conrelid
+        join pg_catalog.pg_namespace ns on ns.oid = cl.relnamespace
+        join pg_catalog.pg_class fcl on fcl.oid = con.confrelid
+        join pg_catalog.pg_namespace fns on fns.oid = fcl.relnamespace
+        where con.contype = 'f'
+          and ns.nspname = $1
+        order by cl.relname, con.conname
+        "#,
+    )
+    .bind(schema)
+    .fetch_all(&mut *conn)
+    .await?;
+    rows.into_iter()
+        .map(|r| {
+            Ok(Relation {
+                name: r.try_get::<String, _>(0)?,
+                table: r.try_get::<String, _>(1)?,
+                columns: r.try_get::<Vec<String>, _>(2)?,
+                ref_schema: r.try_get::<String, _>(3)?,
+                ref_table: r.try_get::<String, _>(4)?,
+                ref_columns: r.try_get::<Vec<String>, _>(5)?,
+            })
+        })
+        .collect()
+}
+
+/// The whole schema as a graph: three statements, not one per relation.
+pub async fn schema_graph(conn: &mut PgConnection, schema: &str) -> Result<SchemaGraph> {
+    let entries = list_tables(&mut *conn, schema).await?;
+    let columns = schema_columns(&mut *conn, schema).await?;
+    let relations = foreign_keys(&mut *conn, schema).await?;
+
+    // One pass, keyed by relation name, rather than a scan of `columns` per
+    // table: the quadratic version is invisible on ten tables and is the whole
+    // cost on a schema with a few hundred.
+    let mut by_table: HashMap<String, Vec<GraphColumn>> = HashMap::new();
+    for (table, column) in columns {
+        by_table.entry(table).or_default().push(column);
+    }
+
+    let tables = entries
+        .into_iter()
+        .map(|e| GraphTable {
+            columns: by_table.remove(&e.name).unwrap_or_default(),
+            name: e.name,
+            kind: e.kind,
+            comment: e.comment,
+        })
+        .collect();
+
+    Ok(SchemaGraph { tables, relations })
 }
 
 pub async fn list_indexes(
