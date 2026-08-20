@@ -97,6 +97,20 @@ export function StatusBar() {
       ? stagedRowsIn(tab.columns, result, new Set(tab.staged))
       : [];
 
+  /**
+   * What the selected cell points at, when it is a foreign key.
+   *
+   * An id column says nothing about where its value came from, and the grid can
+   * only afford a chevron. This is the other half of that: the name of the
+   * relation the chevron would open, in the one place already reserved for
+   * saying what the app is looking at.
+   */
+  const reference = (() => {
+    const column = tab?.selection ? result?.columns[tab.selection.col]?.name : undefined;
+    if (!column) return null;
+    return tab?.columns?.find((c) => c.name === column)?.references ?? null;
+  })();
+
   const stagedRetry =
     tab?.object?.kind === "queue" && tab.queue?.state && tab.staged.length > 0 ? tab : null;
   const retryIds = stagedRetry && result ? stagedJobsIn(result, new Set(stagedRetry.staged)) : [];
@@ -213,6 +227,18 @@ export function StatusBar() {
         </>
       ) : (
         <span>Ready</span>
+      )}
+
+      {reference && (
+        <span
+          title="This column is a foreign key"
+          className="min-w-0 truncate text-ink-muted"
+        >
+          <span className="text-ink-faint">→ </span>
+          <span className="font-mono">
+            {reference.schema}.{reference.table}.{reference.column}
+          </span>
+        </span>
       )}
 
       <div className="ml-auto flex items-center gap-4">

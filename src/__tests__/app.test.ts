@@ -643,3 +643,60 @@ test("a refused delete opens the error dialog and keeps the marks", async () => 
   expect(s.tabs[0]!.staged).toEqual([one!]);
   expect(s.tabs[0]!.results[0]!.rows).toEqual([["1"], ["2"], ["3"]]);
 });
+
+
+/**
+ * Following a foreign key.
+ *
+ * The failure worth naming is a filter that lands on the wrong tab: the
+ * referenced table may already be open, in which case `openObjectTab` focuses
+ * the tab that exists rather than making a new one, and the filter has to go on
+ * that one. Filtering the tab the user came *from* would silently hide the rows
+ * they were reading.
+ */
+test("following a foreign key opens the referenced table filtered to the row", () => {
+  useApp.setState({
+    connections: [server, alpha],
+    open: { alpha: info("alpha", "alpha") },
+    activeConnectionId: "alpha",
+    tabs: [],
+    activeTabId: null,
+    splitTabId: null,
+    focusedPane: "main",
+  });
+
+  useApp
+    .getState()
+    .openRelation("alpha", { schema: "public", table: "users", column: "id" }, "u-1");
+
+  const s = useApp.getState();
+  const opened = s.tabs.find((t) => t.id === s.activeTabId)!;
+  expect(opened.object).toEqual({ schema: "public", name: "users", kind: "table" });
+  expect(opened.filters).toEqual([
+    { id: expect.any(String), column: "id", op: "eq", values: ["u-1"] },
+  ]);
+});
+
+test("following the same key twice reuses the tab and re-points the filter", () => {
+  useApp.setState({
+    connections: [server, alpha],
+    open: { alpha: info("alpha", "alpha") },
+    activeConnectionId: "alpha",
+    tabs: [],
+    activeTabId: null,
+    splitTabId: null,
+    focusedPane: "main",
+  });
+  const target = { schema: "public", table: "users", column: "id" };
+
+  useApp.getState().openRelation("alpha", target, "u-1");
+  useApp.getState().openRelation("alpha", target, "u-2");
+
+  const s = useApp.getState();
+  // One tab for the table, not one per row followed into it, and the filter is
+  // the row asked for last rather than both stacked into an unsatisfiable AND.
+  expect(s.tabs.filter((t) => t.object?.name === "users")).toHaveLength(1);
+  expect(s.tabs.find((t) => t.id === s.activeTabId)!.filters).toEqual([
+    { id: expect.any(String), column: "id", op: "eq", values: ["u-2"] },
+  ]);
+});

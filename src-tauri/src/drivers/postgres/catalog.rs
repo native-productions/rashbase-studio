@@ -12,7 +12,7 @@ use sqlx::Row;
 
 use crate::drivers::postgres::sql::quote_ident;
 use crate::drivers::types::{
-    ColumnInfo, FunctionEntry, GraphColumn, GraphTable, IndexInfo, Relation, RowCount,
+    ColumnInfo, ColumnRef, FunctionEntry, GraphColumn, GraphTable, IndexInfo, Relation, RowCount,
     SchemaEntry, SchemaGraph, TableEntry,
 };
 use crate::error::{Error, Result};
@@ -161,7 +161,14 @@ pub async fn list_columns(
                       from pg_catalog.pg_enum e
                      where e.enumtypid = a.atttypid),
                    '{}'::text[]
-               )
+               ),
+               -- What this column points at, when it is a single-column foreign
+               -- key. Rides along for the same reason the enum labels do: the
+               -- grid needs it the moment a cell is selected, and this query
+               -- already runs when a table opens.
+               fk.fschema,
+               fk.ftable,
+               fk.fcolumn
         from pg_catalog.pg_attribute a
         join pg_catalog.pg_class c on c.oid = a.attrelid
         join pg_catalog.pg_namespace n on n.oid = c.relnamespace
@@ -174,6 +181,21 @@ pub async fn list_columns(
               and k.contype = 'p'
               and a.attnum = any(k.conkey)
         ) pk on true
+        left join lateral (
+            select rn.nspname as fschema, rc.relname as ftable, ra.attname as fcolumn
+            from pg_catalog.pg_constraint k
+            join pg_catalog.pg_class rc on rc.oid = k.confrelid
+            join pg_catalog.pg_namespace rn on rn.oid = rc.relnamespace
+            join pg_catalog.pg_attribute ra
+                 on ra.attrelid = k.confrelid and ra.attnum = k.confkey[1]
+            where k.conrelid = a.attrelid
+              and k.contype = 'f'
+              -- One column each side. A composite key cannot be followed from a
+              -- single cell, so it is left absent rather than half-reported.
+              and array_length(k.conkey, 1) = 1
+              and k.conkey[1] = a.attnum
+            limit 1
+        ) fk on true
         where n.nspname = $1
           and c.relname = $2
           and a.attnum > 0
@@ -195,6 +217,18 @@ pub async fn list_columns(
                 primary_key: r.try_get::<bool, _>(4)?,
                 comment: r.try_get::<Option<String>, _>(5)?,
                 enum_values: r.try_get::<Vec<String>, _>(6)?,
+                references: match (
+                    r.try_get::<Option<String>, _>(7)?,
+                    r.try_get::<Option<String>, _>(8)?,
+                    r.try_get::<Option<String>, _>(9)?,
+                ) {
+                    (Some(schema), Some(table), Some(column)) => Some(ColumnRef {
+                        schema,
+                        table,
+                        column,
+                    }),
+                    _ => None,
+                },
             })
         })
         .collect()

@@ -17,6 +17,7 @@ const info = (name: string, primaryKey = false): ColumnInfo => ({
   default: null,
   primaryKey,
   comment: null,
+  references: null,
 });
 
 const meta = (name: string): ColumnMeta => ({ name, typeName: "text", typeClass: "text" });

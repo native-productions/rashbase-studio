@@ -196,6 +196,22 @@ pub struct ColumnInfo {
     /// editor to compose an array literal, which is a different feature.
     #[serde(default)]
     pub enum_values: Vec<String>,
+    /// The column this one points at, when it is a single-column foreign key.
+    ///
+    /// Single-column only. A composite key would need the caller to carry every
+    /// part of it to mean anything, and "go to the row this references" is a
+    /// gesture on one value.
+    #[serde(default)]
+    pub references: Option<ColumnRef>,
+}
+
+/// One column of one relation, named well enough to open it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnRef {
+    pub schema: String,
+    pub table: String,
+    pub column: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

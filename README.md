@@ -573,6 +573,13 @@ are untouched — a local Postgres and a production replica stay open side by
 side. The same holds for Redis, where a numbered database is a derived
 connection like any other.
 
+A foreign key can be followed. Selecting a cell in one puts a chevron at its
+right edge and names what it points at in the bottom-left of the status bar —
+`→ public.users.id`. Clicking the chevron opens that table filtered to the row
+the value names. A filter rather than a bare lookup, so the rest of the table is
+one click away instead of a dead end. Single-column keys only; half of a
+composite key names nothing, so those show no chevron.
+
 Rows are deleted the way Redis keys are: select a row, press `Delete`, and it
 turns red and struck through. Several at once works the way a file list does —
 `⌘`-click adds one more row, `⇧`-click runs from the caret to the row clicked —

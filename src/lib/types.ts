@@ -143,6 +143,21 @@ export interface ColumnInfo {
    * cell editor into a closed list rather than a text field.
    */
   enumValues: string[];
+  /**
+   * The column this one points at, when it is a single-column foreign key.
+   *
+   * Single-column only: "go to the row this references" is a gesture on one
+   * value, and half of a composite key names nothing. Absent rather than
+   * partial for those.
+   */
+  references: ColumnRef | null;
+}
+
+/** One column of one relation, named well enough to open it. */
+export interface ColumnRef {
+  schema: string;
+  table: string;
+  column: string;
 }
 
 export interface IndexInfo {

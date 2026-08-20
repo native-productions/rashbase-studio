@@ -41,6 +41,7 @@ import { rowKeysFor, rowStageKey, stagedRowsIn } from "@/lib/utils/rowKeys";
 import { rangeBetween, toggle as toggleKey } from "@/lib/utils/selection";
 import { pagedSql, unpageableReason } from "@/lib/utils/statement";
 import type {
+  ColumnRef,
   ConnectionConfig,
   ConnectionInfo,
   DbError,
@@ -308,6 +309,8 @@ interface AppState {
   goPage: (tabId: string, delta: number) => void;
   toggleSort: (tabId: string, column: string) => void;
   setFilters: (tabId: string, filters: Filter[]) => void;
+  /** Opens the table a foreign key points at, filtered to the row it names. */
+  openRelation: (connectionId: string, target: ColumnRef, value: string) => void;
   setFilterEditor: (editor: AppState["filterEditor"]) => void;
   countExactRows: (tabId: string) => Promise<void>;
   /** Walks a keyspace page. `delta` of 0 re-reads, 1 is Next, -1 is Prev. */
@@ -1373,6 +1376,28 @@ export const useApp = create<AppState>((set, get) => {
    * Back to page one, for the same reason changing the page size is: row 400 of
    * a filtered set is not row 400 of the table.
    */
+  /**
+   * Follows a foreign key: opens the referenced table showing only the row it
+   * points at.
+   *
+   * A filter rather than a generated `select`, because a filter is a thing on
+   * screen that the user can widen or drop — landing on one row with no way
+   * back to the rest of the table would be a dead end. Everything else about
+   * the tab is the ordinary table tab it would have been.
+   */
+  openRelation: (connectionId, target, value) => {
+    get().openObjectTab(connectionId, {
+      schema: target.schema,
+      name: target.table,
+      kind: "table",
+    });
+    const tab = activeTab(get());
+    if (!tab) return;
+    get().setFilters(tab.id, [
+      { id: crypto.randomUUID(), column: target.column, op: "eq", values: [value] },
+    ]);
+  },
+
   setFilters: (tabId, filters) => {
     const tab = get().tabs.find((t) => t.id === tabId);
     const object = tab?.object;
