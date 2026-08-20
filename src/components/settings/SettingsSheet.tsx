@@ -34,7 +34,11 @@ function ThemeTile({ theme }: { theme: Theme }) {
     <div
       data-theme={theme}
       aria-hidden="true"
-      className="flex h-[84px] flex-col overflow-hidden rounded bg-base"
+      // Opaque regardless of the translucency preference. `base`, `raised` and
+      // `overlay` all multiply `--surface-alpha` into themselves, and a tile
+      // that inherited it would let the sheet behind it through — which is a
+      // picture of the desktop, not a picture of the palette being chosen.
+      className="flex h-[84px] flex-col overflow-hidden rounded bg-base [--surface-alpha:1] [--surface-alpha-solid:1]"
     >
       {/* Titlebar: traffic lights and one active tab. */}
       <div className="flex h-3.5 shrink-0 items-end gap-1 border-b border-line-soft bg-raised px-1.5 pb-px">

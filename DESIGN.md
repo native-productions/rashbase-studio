@@ -34,6 +34,20 @@ the first time a colour is tuned.
 Dark is what `:root` carries unqualified, so the first paint — before
 `applyPrefs` has run — is the dark app rather than an unstyled one.
 
+**The mapping is written twice on purpose**, and deleting the second copy
+silently breaks the tiles. A `var()` inside a custom property is substituted
+where that property is *declared*, not where it is used: `@theme` declares
+`--color-canvas: var(--t-canvas)` on `:root`, so it resolves there against the
+root's palette and what inherits down is a finished colour — setting `--t-canvas`
+on a descendant after that does nothing at all. The `:root, [data-theme]` block
+under the palettes re-declares the same mapping, which moves the substitution
+onto the themed element. Values still live in one place each; only the names
+repeat, and those carry no decision.
+
+The tiles also pin `--surface-alpha` to 1. `base`, `raised` and `overlay`
+multiply it into themselves, so a tile that inherited the translucency
+preference would show the desktop through the palette it is trying to show.
+
 ### The light scene
 
 > 10am, north-facing window, same 14-inch laptop, twenty minutes into a schema

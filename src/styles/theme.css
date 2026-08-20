@@ -15,6 +15,11 @@
   preview tiles in Settings paint from the real tokens instead of a copied
   list that drifts the first time a colour is tuned.
 
+  It does not work on its own. See the `:root, [data-theme]` block below the
+  palettes, and do not delete it: a `var()` inside a custom property is
+  substituted where the property is declared, so these references resolve
+  here, at `:root`, and inherit downward as finished colours.
+
   Colour strategy in both: Restrained. Tinted neutrals plus one accent under
   10% of surface area, on the active tab, the focus ring, the selected cell,
   the primary button, and SQL keywords. Nowhere else. Every neutral is tinted
@@ -249,6 +254,56 @@
 
   --t-scroll: oklch(0.78 0.008 90);
   --t-scroll-hover: oklch(0.66 0.008 90);
+}
+
+/*
+  The same mapping again, on every element that carries a palette.
+
+  This is not redundant, and removing it silently breaks the theme tiles in
+  Settings. A `var()` inside a custom property is substituted where that
+  property is **declared**, not where it is used: `@theme` declares these on
+  `:root`, so `var(--t-canvas)` resolves there — against the root's palette —
+  and what inherits down is the finished colour. Setting `--t-canvas` on a
+  descendant after that does nothing at all.
+
+  Re-declaring the mapping on `[data-theme]` moves the substitution to that
+  element, which is what lets a `<div data-theme="light">` inside a dark window
+  paint light. Values still live in exactly one place each, in the two blocks
+  above; only the names are written twice, and those carry no decision.
+*/
+:root,
+[data-theme] {
+  --color-canvas: var(--t-canvas);
+  --color-base: var(--t-base);
+  --color-raised: var(--t-raised);
+  --color-overlay: var(--t-overlay);
+  --color-row-alt: var(--t-row-alt);
+  --color-hover: var(--t-hover);
+  --color-sheet: var(--t-sheet);
+  --color-field: var(--t-field);
+  --color-field-hover: var(--t-field-hover);
+  --color-scrim: var(--t-scrim);
+  --color-line: var(--t-line);
+  --color-line-soft: var(--t-line-soft);
+  --color-ink: var(--t-ink);
+  --color-ink-muted: var(--t-ink-muted);
+  --color-ink-faint: var(--t-ink-faint);
+  --color-accent: var(--t-accent);
+  --color-accent-fill: var(--t-accent-fill);
+  --color-on-accent: var(--t-on-accent);
+  --color-accent-dim: var(--t-accent-dim);
+  --color-accent-wash: var(--t-accent-wash);
+  --color-selection: var(--t-selection);
+  --color-selection-soft: var(--t-selection-soft);
+  --color-num: var(--t-num);
+  --color-str: var(--t-str);
+  --color-bool: var(--t-bool);
+  --color-null: var(--t-null);
+  --color-danger: var(--t-danger);
+  --color-on-danger: var(--t-on-danger);
+  --color-warn: var(--t-warn);
+  --color-scroll: var(--t-scroll);
+  --color-scroll-hover: var(--t-scroll-hover);
 }
 
 /*
