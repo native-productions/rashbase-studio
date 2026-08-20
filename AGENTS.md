@@ -1,10 +1,10 @@
 # AGENTS.md
 
 Instructions for AI agents working in this repository. Human-facing docs are
-[README.md](README.md) (what exists and how it works), [PRODUCT.md](PRODUCT.md)
-(why it exists), and [DESIGN.md](DESIGN.md) (the design system). Read the
-relevant one before changing the surface it covers; this file does not repeat
-them.
+[README.md](README.md) (what exists), [CONTRIBUTING.md](CONTRIBUTING.md) (how to
+work on it), [PRODUCT.md](PRODUCT.md) (why it exists), and
+[DESIGN.md](DESIGN.md) (the design system). Read the relevant one before
+changing the surface it covers; this file does not repeat them.
 
 ## What this is
 
