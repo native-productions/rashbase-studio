@@ -188,7 +188,7 @@ export function CommandPalette() {
       <Dialog.Portal>
         {/* Above the result grid, whose sticky header carries its own z-index
             and would otherwise paint straight through the palette. */}
-        <Dialog.Overlay className="fixed inset-0 z-40 bg-black/40" />
+        <Dialog.Overlay className="fixed inset-0 z-40 bg-scrim/40" />
         <Dialog.Content
           aria-describedby={undefined}
           className="fixed top-[18vh] left-1/2 z-50 w-[min(560px,90vw)] -translate-x-1/2 overflow-hidden rounded-lg border border-line bg-overlay shadow-2xl shadow-black/50"

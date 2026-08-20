@@ -141,3 +141,29 @@ export function enumValuesFor(
 export function nullableColumn(columns: ColumnInfo[] | null, columnName: string): boolean {
   return !columns?.find((c) => c.name === columnName)?.notNull;
 }
+
+/**
+ * Whether this tab can be recycled to hold something else.
+ *
+ * The `tabBehaviour: "idle"` preference replaces a tab in place instead of
+ * pushing a new one, and this is the one definition of which tabs it may take.
+ * A tab is idle when nothing on it is unfinished:
+ *
+ * - **filters** and **staged** are what the user asked for. A filter is a
+ *   question still being asked, and a staged deletion is a confirmation still
+ *   pending — recycling either loses work with no error to show for it.
+ * - **selectedRows** is the same thing one step earlier: rows picked out are
+ *   the answer to "which ones", typed by hand.
+ * - **pinned** is a statement that the tab survives even "close other tabs",
+ *   so it certainly survives opening a table.
+ * - **the split pane's tab** is on screen next to this one. Replacing what the
+ *   user is looking at is not what "reuse the idle tab" means.
+ * - **running** has a cancel waiting on it.
+ * - **typed SQL** on a query tab is work. An object tab's `sql` is generated,
+ *   so it does not count.
+ */
+export function tabIdle(tab: QueryTab, splitTabId: string | null): boolean {
+  if (tab.pinned || tab.running || tab.id === splitTabId) return false;
+  if (tab.filters.length > 0 || tab.staged.length > 0 || tab.selectedRows.length > 0) return false;
+  return tab.object !== null || tab.sql.trim() === "";
+}

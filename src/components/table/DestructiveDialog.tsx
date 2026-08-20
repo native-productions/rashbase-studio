@@ -92,7 +92,7 @@ export function DestructiveDialog({
   return (
     <Dialog.Root open={pending !== null} onOpenChange={(o) => !o && onClose()}>
       <Dialog.Portal>
-        <Dialog.Overlay className="overlay-anim fixed inset-0 z-40 bg-black/50" />
+        <Dialog.Overlay className="overlay-anim fixed inset-0 z-40 bg-scrim/50" />
         <Dialog.Content
           aria-describedby={undefined}
           className="sheet-anim fixed top-1/2 left-1/2 z-50 w-[min(440px,92vw)] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-line bg-overlay shadow-2xl shadow-black/50"
@@ -153,7 +153,7 @@ export function DestructiveDialog({
             <button
               disabled={!confirmed || busy}
               onClick={() => void run()}
-              className="pressable rounded bg-danger px-3 py-1.5 text-[12px] font-medium text-canvas disabled:pointer-events-none disabled:opacity-40"
+              className="pressable rounded bg-danger px-3 py-1.5 text-[12px] font-medium text-on-danger disabled:pointer-events-none disabled:opacity-40"
             >
               {busy ? "Running…" : dropping ? "Drop" : "Truncate"}
             </button>

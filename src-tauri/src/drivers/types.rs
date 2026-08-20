@@ -49,6 +49,20 @@ pub struct ConnectionConfig {
     /// typed and what the tunnel asks for.
     #[serde(default)]
     pub ssh: Option<SshConfig>,
+    /// Ask for Touch ID before opening this one.
+    ///
+    /// On the connection rather than in `security.json` because that is what it
+    /// is about, and because a connection is already persisted and already
+    /// synced to the frontend. Defaulted, like every other field added after
+    /// the first release: a `connections.json` written before this existed
+    /// should open, not fail to parse.
+    ///
+    /// A *derived* connection — one made by picking a database off a server —
+    /// carries whatever the sheet last wrote for it, but the gate is asked
+    /// against the connection being opened, so switching database on a gated
+    /// server prompts once and then rides the grace window.
+    #[serde(default)]
+    pub require_biometric: bool,
 }
 
 /// What the jump host is, and how to prove who we are to it.
@@ -507,6 +521,10 @@ mod tests {
         assert_eq!(config.database, "shop");
         // And nothing about it claims to be tunnelled.
         assert!(config.ssh.is_none());
+        // Nor gated. A connection saved before Touch ID existed must open the
+        // way it always did — a default that came out true would lock every
+        // stored connection behind a prompt nobody asked for.
+        assert!(!config.require_biometric);
     }
 
     /// The tunnel travels as camelCase like everything else on the wire, and a

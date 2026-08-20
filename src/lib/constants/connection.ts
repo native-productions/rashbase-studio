@@ -109,6 +109,7 @@ export const BLANK_CONNECTION: ConnectionConfig = {
   environment: null,
   parentId: null,
   ssh: null,
+  requireBiometric: false,
 };
 
 export const DEFAULT_SSH_PORT = 22;

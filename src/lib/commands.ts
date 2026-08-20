@@ -321,6 +321,15 @@ export const COMMANDS: Command[] = [
     run: () => s().toggleSidebar(),
   },
   {
+    id: "settings.open",
+    label: "Settings…",
+    group: "View",
+    // The platform's own key for this, and the same id the macOS menu item
+    // carries. Everywhere else the menu does not exist and this is the way in.
+    keys: "⌘,",
+    run: () => s().setSettings(true),
+  },
+  {
     id: "view.palette",
     label: "Command palette",
     group: "View",

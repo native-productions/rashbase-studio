@@ -17,3 +17,12 @@ export const CREDENTIAL_UNREADABLE = "CREDENTIAL_UNREADABLE";
  * Defined alongside `src-tauri/src/error.rs`.
  */
 export const SSH_SECRET_REQUIRED = "SSH_SECRET_REQUIRED";
+
+/**
+ * Touch ID was cancelled, refused, or is not available on this machine. The
+ * connection never reached the keystore, so nothing about the stored password
+ * is in question and the sheet stays closed.
+ *
+ * Defined alongside `src-tauri/src/error.rs`.
+ */
+export const AUTH_REFUSED = "AUTH_REFUSED";

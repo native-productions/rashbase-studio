@@ -82,7 +82,7 @@ export function CellModal() {
   return (
     <Dialog.Root open onOpenChange={(o) => !o && closeCellView()}>
       <Dialog.Portal>
-        <Dialog.Overlay className="overlay-anim fixed inset-0 z-40 bg-black/40" />
+        <Dialog.Overlay className="overlay-anim fixed inset-0 z-40 bg-scrim/40" />
         <Dialog.Content
           data-hotkeys-off=""
           aria-describedby={undefined}
@@ -176,7 +176,7 @@ export function CellModal() {
                 <button
                   disabled={!canSave}
                   onClick={() => void commitCellView(text)}
-                  className="pressable shrink-0 rounded bg-accent px-2.5 py-0.5 text-[11px] font-medium text-canvas disabled:bg-line disabled:text-ink-faint"
+                  className="pressable shrink-0 rounded bg-accent-fill px-2.5 py-0.5 text-[11px] font-medium text-on-accent disabled:bg-line disabled:text-ink-faint"
                 >
                   Save
                 </button>

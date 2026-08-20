@@ -2,6 +2,7 @@
 
 use tauri::{AppHandle, State};
 
+use crate::commands::security::{guard_connection, AuthState};
 use crate::drivers::{ConnectionConfig, ConnectionInfo, DbState};
 use crate::error::Result;
 use crate::keychain;
@@ -18,10 +19,23 @@ use crate::keychain;
 pub async fn connect(
     app: AppHandle,
     db: State<'_, DbState>,
+    auth: State<'_, AuthState>,
     config: ConnectionConfig,
     password: Option<String>,
     ssh_secret: Option<String>,
 ) -> Result<ConnectionInfo> {
+    // Ahead of the keystore lookup, and that placement is the feature. A gate
+    // the frontend drew would be a gate a compromised webview skips; here, a
+    // refusal means the secret was never read at all.
+    //
+    // Only when the secret is coming out of the keystore. Testing a password
+    // typed into the sheet passes it inline and never reaches the store, and
+    // asking for a fingerprint to check something the user just typed is a
+    // prompt with nothing behind it.
+    if password.is_none() {
+        guard_connection(&app, &auth, &config.name, config.require_biometric).await?;
+    }
+
     let owner = config.parent_id.as_deref().unwrap_or(&config.id);
 
     let stored_password;

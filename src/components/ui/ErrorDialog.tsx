@@ -22,7 +22,7 @@ export function ErrorDialog() {
   return (
     <Dialog.Root open={dialog !== null} onOpenChange={(o) => !o && setErrorDialog(null)}>
       <Dialog.Portal>
-        <Dialog.Overlay className="overlay-anim fixed inset-0 z-40 bg-black/50" />
+        <Dialog.Overlay className="overlay-anim fixed inset-0 z-40 bg-scrim/50" />
         <Dialog.Content
           aria-describedby={undefined}
           className="sheet-anim fixed top-1/2 left-1/2 z-50 w-[min(520px,92vw)] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-line bg-overlay shadow-2xl shadow-black/50"
@@ -56,7 +56,7 @@ export function ErrorDialog() {
           </div>
 
           <div className="flex justify-end border-t border-line-soft px-5 py-3">
-            <Dialog.Close className="pressable rounded bg-accent px-3 py-1.5 text-[12px] font-medium text-canvas">
+            <Dialog.Close className="pressable rounded bg-accent-fill px-3 py-1.5 text-[12px] font-medium text-on-accent">
               Close
             </Dialog.Close>
           </div>

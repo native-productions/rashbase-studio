@@ -14,10 +14,12 @@ mod catalog;
 mod connections;
 mod export;
 mod query;
+mod security;
 mod session;
 
 pub use catalog::*;
 pub use connections::*;
 pub use export::*;
 pub use query::*;
+pub use security::*;
 pub use session::*;

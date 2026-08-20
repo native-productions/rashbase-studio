@@ -1,9 +1,10 @@
 # Rashbase Studio design system
 
-Tokens live in `src/styles/theme.css` as a Tailwind v4 `@theme` block. That file
-is the source of truth; this document explains the reasoning behind it.
+Tokens live in `src/styles/theme.css` as a Tailwind v4 `@theme` block naming
+them and two `[data-theme]` blocks holding the values. That file is the source
+of truth; this document explains the reasoning behind it.
 
-## The scene that decides the palette
+## The scene that decides the dark palette
 
 > 11pm, warm desk lamp, 14-inch laptop, forty minutes into a result set, hunting
 > for a NULL in column 7.
@@ -20,6 +21,57 @@ That scene, not the category "database tool", produces the decisions below.
 - **Low chroma on every surface.** The data must be the brightest thing on
   screen, which is only possible if the chrome is not competing.
 - **The chrome is translucent, the data is not.** See below.
+
+## Two palettes, one set of names
+
+`theme.css` resolves every `--color-*` through a second layer of `--t-*`
+variables, and the two `[data-theme]` blocks under the `@theme` block are where
+those values are written. The indirection buys one thing: a palette applies to
+*any* element, not only `:root`, which is what lets the theme preview tiles in
+Settings paint from the real tokens instead of a copied list that goes stale
+the first time a colour is tuned.
+
+Dark is what `:root` carries unqualified, so the first paint — before
+`applyPrefs` has run — is the dark app rather than an unstyled one.
+
+### The light scene
+
+> 10am, north-facing window, same 14-inch laptop, twenty minutes into a schema
+> someone else wrote, cross-checking a column against a spec in the window next
+> to it.
+
+Warm paper, not white, tinted toward the same hue 90 the dark palette is. The
+two are one room at two times of day, not two products. Ink lands at 12.6:1 on
+canvas, which is where dark sits, so the ratio the eye works against does not
+change with the switch.
+
+`--color-ink-faint` is 0.52 rather than the lighter value the eye first
+reaches for, because it carries the 10px eyebrow labels and anything higher
+falls under 4.5:1 on paper.
+
+### Why the yellow is three tokens
+
+At the lightness that makes it read as yellow, the accent is ~2:1 against paper.
+That is neither a readable word nor a visible ring, so on light it splits:
+
+| Token | Job | Dark | Light |
+|---|---|---|---|
+| `--color-accent` | Text, SQL keywords, focus ring, borders, dots | `oklch(0.70 0.12 88)` | `oklch(0.56 0.14 72)` |
+| `--color-accent-fill` | Filled surfaces: primary button, chosen segment | same as accent | `oklch(0.82 0.16 90)` |
+| `--color-on-accent` | What sits on that fill | canvas | `oklch(0.26 0.03 80)` |
+
+On dark all three collapse to what they always were, so nothing about the dark
+palette moved.
+
+`--color-on-danger` is the same split one colour over. `--color-scrim` is an
+opaque colour rather than a baked alpha, so the three strengths the app already
+uses (`/40` on the palette, `/50` on most dialogs, `/70` under the connection
+sheet) survive the move off `bg-black`.
+
+The editor is rebuilt when the palette changes. CodeMirror's `dark` flag
+decides whether its `&dark` or `&light` base rules apply, every colour we do
+not override falls through to that set, and the flag cannot be changed on a
+live extension.
 
 ## Colour strategy: Restrained
 
@@ -48,6 +100,9 @@ the system, no `#000`, and no `#fff`.
 | Tertiary text | `--color-ink-faint` | `oklch(0.56 0.006 90)` |
 | Accent | `--color-accent` | `oklch(0.70 0.12 88)` |
 | Selection film | `--color-accent-wash` | `oklch(0.70 0.12 88 / 0.17)` |
+
+Those are the dark values. The light column is above, under *Why the yellow is
+three tokens*.
 
 `--color-ink-faint` went up, not down. It carries the 10px eyebrow labels,
 which sat at 3.7:1 on the old ground; on the lower ground 0.56 buys 4.6:1 and
@@ -124,10 +179,10 @@ same place they did before.
 
 ### The preference
 
-`view.translucency` in the command palette, persisted to `localStorage` by
-`src/lib/translucency.ts`, defaulting on for macOS and Windows and off for
-Linux. There is no Preferences panel; a ⌘K command is the settings surface
-this app already has, and it is where every other view toggle lives.
+`view.translucency`, persisted to `localStorage` by `src/lib/translucency.ts`,
+defaulting on for macOS and Windows and off for Linux. It is reachable from the
+command palette and from Settings → Appearance; both call the same command, so
+there is one switch with two doors.
 
 Switching it does not animate. It is a configuration change, and one that
 happens instantly is the honest reading of it.
@@ -153,6 +208,26 @@ Both are OFL and self-hosted via `@fontsource`. No CDN, no network fetch, works
 offline.
 
 Hierarchy comes from weight and size, never from colour alone.
+
+### Text size
+
+One multiplier on the whole window, as `zoom` on the document root.
+
+Every text size in this app is a hardcoded px while every spacing utility is
+already rem, so moving the root font-size would grow the padding and leave the
+text where it was. `zoom` moves all of it at once — text, spacing, the grid's
+row height, the column widths measured in JS, the editor, the ERD, and the
+dialogs, which portal onto `body` and are therefore inside it.
+
+**The titlebar cancels it back out**, with `.titlebar { zoom: calc(1 / var(--ui-scale)) }`.
+It has to: `trafficLightPosition.y` places the native buttons in device pixels
+and does not scale with a preference, so a strip that scaled would leave the
+tabs hanging off a line the lights no longer share. The tab strip is the one
+surface this preference does not reach, and that is the cost of keeping the
+seam.
+
+Four steps rather than a slider, because each one is a number checked against
+that seam: 0.9 Compact, 1.0 Default, 1.15 Large, 1.3 Larger.
 
 ## Motion
 
@@ -208,6 +283,29 @@ Rules that hold everywhere:
   to line up. The arithmetic tying the two numbers together is in
   `Titlebar.tsx`; changing the bar height means changing the inset.
 - Resizable split between editor and results; both panes have an 80px floor.
+
+### The Settings sheet
+
+Reached from **Rashbase Studio → Settings…**, ⌘, and the palette — one command
+id, three doors. 720×560, fixed, split by a single 1px line into a 164px rail
+and a content pane. Fixed rather than sized to its section: a dialog that
+resizes as you move between three sections is a dialog whose rail moves under
+the pointer.
+
+Three sections, and each control that could be a word is a picture instead
+where the picture answers something the word cannot:
+
+- **Theme** is two tiles, each a miniature of the app — titlebar, sidebar, grid
+  with one selected cell — rendered inside `data-theme` so it paints from the
+  real tokens. Picking a palette is picking what a result set looks like, and
+  no swatch answers that.
+- **Text size** carries a specimen under the control: a real grid fragment with
+  mono numerals, a selected cell, and the eyebrow header, at the size that is
+  actually being chosen.
+- **Tab behaviour** draws the two outcomes as three tab shapes.
+- **Security** shows nothing but a sentence where Touch ID is unavailable. A
+  disabled switch says "no sensor found" to a Windows user, which sends them
+  looking for something that was never going to be there.
 
 ## Logo
 

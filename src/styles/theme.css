@@ -8,23 +8,17 @@
 /*
   Rashbase Studio design tokens.
 
-  Scene that decides the palette: 11pm, warm desk lamp, 14-inch laptop, forty
-  minutes staring at a result set hunting for a NULL in column 7. That forces
-  warm rather than blue-black, and low chroma on every surface so the *data*
-  is the brightest thing on screen.
+  Two palettes, one set of names. Every `--color-*` below is a reference to a
+  `--t-*` value, and the two `[data-theme]` blocks underneath are where those
+  values are actually written. That indirection buys one thing worth having:
+  a palette can be applied to *any* element, not only `:root`, so the theme
+  preview tiles in Settings paint from the real tokens instead of a copied
+  list that drifts the first time a colour is tuned.
 
-  The ground is low: canvas sits at L 0.145. The ink came down with it, so the
-  contrast ratio is held near where it already was (12.7:1, from 11.7:1)
-  instead of rising. That is the whole difference between a dark palette and
-  the neon-on-black tools PRODUCT.md names as an anti-reference: lower
-  luminance, same ratio.
-
-  Colour strategy: Restrained. Tinted neutrals plus one accent under 10% of
-  surface area. The yellow appears on active tab, focus ring, selected cell,
-  primary button, and SQL keywords. Nowhere else.
-
-  Every neutral is tinted toward hue 90 at chroma 0.008. No pure grey anywhere,
-  no #000, no #fff.
+  Colour strategy in both: Restrained. Tinted neutrals plus one accent under
+  10% of surface area, on the active tab, the focus ring, the selected cell,
+  the primary button, and SQL keywords. Nowhere else. Every neutral is tinted
+  toward hue 90. No pure grey anywhere, no #000, no #fff.
 */
 @theme {
   /* Ground.
@@ -38,54 +32,75 @@
      translucent sidebar punches an opaque hole through the vibrancy, so the
      hover state reads as a hole instead of a highlight. As alpha they tint
      whatever is behind them, and the opaque path looks the same either way. */
-  --color-canvas: oklch(0.145 0.008 90);
-  --color-base: oklch(0.145 0.008 90 / var(--surface-alpha));
-  --color-raised: oklch(0.175 0.008 90 / var(--surface-alpha));
-  --color-overlay: oklch(0.205 0.009 90 / var(--surface-alpha-solid));
-  --color-row-alt: oklch(0.168 0.008 90);
-  --color-hover: oklch(0.85 0.01 90 / 0.055);
+  --color-canvas: var(--t-canvas);
+  --color-base: var(--t-base);
+  --color-raised: var(--t-raised);
+  --color-overlay: var(--t-overlay);
+  --color-row-alt: var(--t-row-alt);
+  --color-hover: var(--t-hover);
 
-  /* Dialogs. Darker than the app behind them, and darker than the scrim over
-     it, so the sheet reads as a hole punched to a lower level and the filled
-     fields inside it become the brightest thing in the frame. That is the
-     order the eye wants here: a sheet is where something is typed, not read.
-     Fields carry no border: on a dark ground a filled field says "type here"
-     more plainly than an outlined one, and one less line per row is what lets
-     the rows sit close together without looking caged. */
-  --color-sheet: oklch(0.125 0.008 90 / var(--surface-alpha-solid));
-  --color-field: oklch(0.285 0.008 90);
-  --color-field-hover: oklch(0.315 0.008 90);
+  /* Dialogs. Set apart from the app behind them, and from the scrim over it,
+     so the sheet reads as its own level and the filled fields inside it become
+     the thing the eye lands on. That is the order this surface wants: a sheet
+     is where something is typed, not read. Fields carry no border — a filled
+     field says "type here" more plainly than an outlined one, and one less
+     line per row is what lets the rows sit close without looking caged. */
+  --color-sheet: var(--t-sheet);
+  --color-field: var(--t-field);
+  --color-field-hover: var(--t-field-hover);
+
+  /* What sits over a dialog. An opaque colour rather than a baked alpha, so
+     the three strengths the app already uses (`/40` on the palette, `/50` on
+     most dialogs, `/70` under the connection sheet) survive the move. */
+  --color-scrim: var(--t-scrim);
 
   /* Lines */
-  --color-line: oklch(0.275 0.008 90);
-  --color-line-soft: oklch(0.21 0.008 90);
+  --color-line: var(--t-line);
+  --color-line-soft: var(--t-line-soft);
 
   /* Ink */
-  --color-ink: oklch(0.89 0.006 90);
-  --color-ink-muted: oklch(0.68 0.006 90);
-  /* Up, not down. At the old value the 10px eyebrow labels sat at 3.7:1 on the
-     old ground; on the lower ground 0.56 buys 4.6:1 for free. */
-  --color-ink-faint: oklch(0.56 0.006 90);
+  --color-ink: var(--t-ink);
+  --color-ink-muted: var(--t-ink-muted);
+  --color-ink-faint: var(--t-ink-faint);
 
-  /* Accent — kept under 10% of surface */
-  --color-accent: oklch(0.7 0.12 88);
-  --color-accent-dim: oklch(0.55 0.1 88);
-  --color-accent-wash: oklch(0.7 0.12 88 / 0.17);
+  /* Accent — kept under 10% of surface.
+
+     Three tokens rather than one, because on paper the yellow cannot do all
+     three jobs at once. `accent` is the readable one: text, SQL keywords, the
+     focus ring, borders, the live dot. `accent-fill` is the one that fills a
+     surface — the primary button, the chosen segment — and on light it is a
+     brighter yellow than anything readable as text would be. `on-accent` is
+     what sits on top of that fill.
+
+     On dark all three collapse to what they always were, so nothing about the
+     dark palette moved. */
+  --color-accent: var(--t-accent);
+  --color-accent-fill: var(--t-accent-fill);
+  --color-on-accent: var(--t-on-accent);
+  --color-accent-dim: var(--t-accent-dim);
+  --color-accent-wash: var(--t-accent-wash);
   /* Selected text. The accent at low alpha rather than a wash: a wash sits
      within a few points of lightness of every surface here, so a selection
      drawn in it was invisible on the surface it covered. Alpha, so the text
      underneath keeps its own colour. */
-  --color-selection: oklch(0.72 0.13 88 / 0.4);
-  --color-selection-soft: oklch(0.72 0.13 88 / 0.19);
+  --color-selection: var(--t-selection);
+  --color-selection-soft: var(--t-selection-soft);
 
   /* Semantic. Deliberately lower chroma than the accent so a column of
      numbers never competes with the one thing that means "focus". */
-  --color-num: oklch(0.73 0.085 200);
-  --color-str: oklch(0.75 0.075 145);
-  --color-bool: oklch(0.73 0.085 300);
-  --color-null: oklch(0.45 0.02 90);
-  --color-danger: oklch(0.61 0.15 25);
-  --color-warn: oklch(0.7 0.11 65);
+  --color-num: var(--t-num);
+  --color-str: var(--t-str);
+  --color-bool: var(--t-bool);
+  --color-null: var(--t-null);
+  --color-danger: var(--t-danger);
+  --color-on-danger: var(--t-on-danger);
+  --color-warn: var(--t-warn);
+
+  /* The scrollbar. Its own pair rather than a line token: it is a control
+     sitting on whatever surface scrolls, and on light it has to be darker than
+     any border or it disappears into the panel it is scrolling. */
+  --color-scroll: var(--t-scroll);
+  --color-scroll-hover: var(--t-scroll-hover);
 
   --font-sans: "Instrument Sans Variable", "Instrument Sans", system-ui, sans-serif;
   --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, monospace;
@@ -95,6 +110,145 @@
 
   /* macOS reserves this much of the titlebar for the traffic lights. */
   --spacing-traffic: 78px;
+}
+
+/*
+  Dark. The default, and what the app was before there were two.
+
+  Scene that decides it: 11pm, warm desk lamp, 14-inch laptop, forty minutes
+  staring at a result set hunting for a NULL in column 7. That forces warm
+  rather than blue-black, and low chroma on every surface so the *data* is the
+  brightest thing on screen.
+
+  The ground is low: canvas sits at L 0.145. The ink came down with it, so the
+  contrast ratio is held near where it already was (12.7:1, from 11.7:1)
+  instead of rising. That is the whole difference between a dark palette and
+  the neon-on-black tools PRODUCT.md names as an anti-reference: lower
+  luminance, same ratio.
+
+  `:root` carries it unqualified as well as under the attribute, so the very
+  first paint — before `applyPrefs` has run, and in any test that renders
+  without it — is the dark app rather than an unstyled one.
+*/
+:root,
+[data-theme="dark"] {
+  --t-canvas: oklch(0.145 0.008 90);
+  --t-base: oklch(0.145 0.008 90 / var(--surface-alpha));
+  --t-raised: oklch(0.175 0.008 90 / var(--surface-alpha));
+  --t-overlay: oklch(0.205 0.009 90 / var(--surface-alpha-solid));
+  --t-row-alt: oklch(0.168 0.008 90);
+  --t-hover: oklch(0.85 0.01 90 / 0.055);
+
+  --t-sheet: oklch(0.125 0.008 90 / var(--surface-alpha-solid));
+  --t-field: oklch(0.285 0.008 90);
+  --t-field-hover: oklch(0.315 0.008 90);
+  --t-scrim: oklch(0 0 0);
+
+  --t-line: oklch(0.275 0.008 90);
+  --t-line-soft: oklch(0.21 0.008 90);
+
+  --t-ink: oklch(0.89 0.006 90);
+  --t-ink-muted: oklch(0.68 0.006 90);
+  /* Up, not down. At the old value the 10px eyebrow labels sat at 3.7:1 on the
+     old ground; on this ground 0.56 buys 4.6:1 for free. */
+  --t-ink-faint: oklch(0.56 0.006 90);
+
+  --t-accent: oklch(0.7 0.12 88);
+  /* Identical to `accent` here. On a ground this low a yellow that reads as
+     text also reads as a fill, so the split only costs light anything. */
+  --t-accent-fill: oklch(0.7 0.12 88);
+  --t-on-accent: oklch(0.145 0.008 90);
+  --t-accent-dim: oklch(0.55 0.1 88);
+  --t-accent-wash: oklch(0.7 0.12 88 / 0.17);
+  --t-selection: oklch(0.72 0.13 88 / 0.4);
+  --t-selection-soft: oklch(0.72 0.13 88 / 0.19);
+
+  --t-num: oklch(0.73 0.085 200);
+  --t-str: oklch(0.75 0.075 145);
+  --t-bool: oklch(0.73 0.085 300);
+  --t-null: oklch(0.45 0.02 90);
+  --t-danger: oklch(0.61 0.15 25);
+  --t-on-danger: oklch(0.145 0.008 90);
+  --t-warn: oklch(0.7 0.11 65);
+
+  --t-scroll: oklch(0.29 0.008 90);
+  --t-scroll-hover: oklch(0.39 0.008 90);
+}
+
+/*
+  Light.
+
+  Scene that decides it: 10am, north-facing window, same 14-inch laptop,
+  twenty minutes into a schema someone else wrote, cross-checking a column
+  against a spec in the window next to it.
+
+  Warm paper, not white, and the same hue 90 the dark palette is tinted
+  toward — the two are the same room at two times of day, not two products.
+  Ink lands at 12.6:1 on canvas, which is where dark sits, so the ratio the
+  eye works against does not change with the switch.
+
+  The yellow is the reason this palette needed three accent tokens. At the
+  lightness that makes it read as yellow it is 2:1 against paper, which is
+  neither a readable word nor a visible ring. So it splits: a deep amber that
+  clears 4.9:1 as text and 4.5:1 as a border, and a bright yellow used only
+  where it fills a shape and something dark sits on it.
+*/
+[data-theme="light"] {
+  --t-canvas: oklch(0.985 0.004 90);
+  --t-base: oklch(0.965 0.005 90 / var(--surface-alpha));
+  --t-raised: oklch(0.945 0.006 90 / var(--surface-alpha));
+  --t-overlay: oklch(0.995 0.003 90 / var(--surface-alpha-solid));
+  --t-row-alt: oklch(0.960 0.005 90);
+  /* Inverted: a light film over paper is nothing at all. */
+  --t-hover: oklch(0.30 0.02 90 / 0.062);
+
+  /* Above the app rather than below it. On paper a sheet cannot be "a hole
+     punched to a lower level" — there is no lower level — so it goes the other
+     way and reads as the nearest surface, with the scrim putting the app
+     behind it. The fields keep their fill and stay darker than the sheet,
+     which is the same instruction the dark palette gives: the thing you type
+     into is the thing that stands out. */
+  --t-sheet: oklch(0.995 0.003 90 / var(--surface-alpha-solid));
+  --t-field: oklch(0.928 0.006 90);
+  --t-field-hover: oklch(0.900 0.007 90);
+  /* Warm and dark, not black: at these alphas pure black over paper reads as
+     a power cut rather than as something being in front. */
+  --t-scrim: oklch(0.32 0.012 90);
+
+  --t-line: oklch(0.862 0.008 90);
+  --t-line-soft: oklch(0.922 0.006 90);
+
+  --t-ink: oklch(0.26 0.010 90);
+  --t-ink-muted: oklch(0.44 0.010 90);
+  /* 4.5:1 on canvas, which is what the 10px eyebrow labels need. The obvious
+     value here is lighter; the obvious value here is also unreadable. */
+  --t-ink-faint: oklch(0.52 0.010 90);
+
+  --t-accent: oklch(0.56 0.14 72);
+  --t-accent-fill: oklch(0.82 0.16 90);
+  --t-on-accent: oklch(0.26 0.030 80);
+  --t-accent-dim: oklch(0.68 0.11 78);
+  /* Stronger than dark's 0.17. A film that tints a near-white ground has to
+     carry more alpha to move it at all, and the selected cell has to survive
+     being read next to the zebra row. */
+  --t-accent-wash: oklch(0.80 0.16 88 / 0.40);
+  --t-selection: oklch(0.82 0.16 88 / 0.55);
+  --t-selection-soft: oklch(0.82 0.16 88 / 0.26);
+
+  /* Down from the dark values, and a little more chroma to pay for it: at
+     L 0.73 a column of numbers on paper is a column of nothing. */
+  --t-num: oklch(0.50 0.12 235);
+  --t-str: oklch(0.46 0.11 150);
+  --t-bool: oklch(0.48 0.15 300);
+  /* Recessive means lighter here, not darker. NULL still has to be the thing
+     the eye skips. */
+  --t-null: oklch(0.68 0.015 90);
+  --t-danger: oklch(0.52 0.19 27);
+  --t-on-danger: oklch(0.99 0.005 90);
+  --t-warn: oklch(0.58 0.13 62);
+
+  --t-scroll: oklch(0.78 0.008 90);
+  --t-scroll-hover: oklch(0.66 0.008 90);
 }
 
 /*
@@ -124,6 +278,25 @@
     overflow: hidden;
   }
 
+  /*
+    Font size, as one multiplier on the whole window.
+
+    Every text size in this app is a hardcoded px while every spacing utility
+    is already rem, so moving the root font-size would grow the padding and
+    leave the text where it was. `zoom` moves all of it at once — text,
+    spacing, the grid's row height, the column widths measured in JS, the
+    editor, the ERD, and the dialogs, which portal onto `body` and are
+    therefore inside this.
+
+    The titlebar cancels it back out; see the counter-zoom in `Titlebar.tsx`
+    and the comment there. The traffic lights are placed by the OS from a
+    number in `tauri.conf.json`, and a strip that scales stops sharing their
+    line.
+  */
+  html {
+    zoom: var(--ui-scale, 1);
+  }
+
   body {
     /* Translucent when the effect is on, solid otherwise. The grid and editor
        repaint themselves on `canvas`, so nothing readable rides on this. */
@@ -145,7 +318,10 @@
     color: var(--color-ink);
   }
 
-  /* One visible focus treatment everywhere, driven by the accent. */
+  /* One visible focus treatment everywhere, driven by the accent. On light
+     that is the deep amber rather than the yellow, for the reason the palette
+     block gives: the yellow is 2:1 against paper and a ring nobody can see is
+     not a focus treatment. */
   :focus-visible {
     outline: 2px solid var(--color-accent);
     outline-offset: 1px;
@@ -178,13 +354,13 @@
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: oklch(0.29 0.008 90);
+    background: var(--color-scroll);
     border: 3px solid transparent;
     background-clip: content-box;
     border-radius: 5px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: oklch(0.39 0.008 90);
+    background: var(--color-scroll-hover);
     border: 3px solid transparent;
     background-clip: content-box;
   }
@@ -194,6 +370,23 @@
 }
 
 @layer components {
+  /*
+    The titlebar cancels the font-size zoom.
+
+    It has to. `trafficLightPosition.y` in `tauri.conf.json` places the native
+    buttons in device pixels, and the arithmetic tying that number to this
+    bar's 44px height is documented at the top of `Titlebar.tsx`. Scaling the
+    strip they sit in leaves the tabs hanging off a line the lights no longer
+    share, which is exactly the two-rows-that-failed-to-line-up the height was
+    chosen to avoid.
+
+    So the tab strip is the one surface the font size preference does not
+    reach. That is a cost, and it is smaller than the alternative.
+  */
+  .titlebar {
+    zoom: calc(1 / var(--ui-scale, 1));
+  }
+
   /* Section labels in the sidebar. */
   .label-eyebrow {
     font-size: 10px;

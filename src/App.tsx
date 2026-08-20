@@ -7,6 +7,8 @@ import { CellModal } from "@/components/grid/CellModal";
 import { CommandPalette } from "@/components/palette/CommandPalette";
 import { ConnectionSheet } from "@/components/connection/ConnectionSheet";
 import { ExportDialog } from "@/components/export/ExportDialog";
+import { SettingsSheet } from "@/components/settings/SettingsSheet";
+import { LockScreen } from "@/components/shell/LockScreen";
 import { ErrorDialog } from "@/components/ui/ErrorDialog";
 import { Logo } from "@/components/Logo";
 import { useHotkeys } from "@/lib/hotkeys";
@@ -59,7 +61,7 @@ function EmptyState() {
           only ever produced a tab with nothing to run against. */}
       <button
         onClick={() => setSheet(true, null)}
-        className="pressable rounded bg-accent px-3 py-1.5 text-[12px] font-medium text-canvas"
+        className="pressable rounded bg-accent-fill px-3 py-1.5 text-[12px] font-medium text-on-accent"
       >
         New connection
       </button>
@@ -78,6 +80,8 @@ export default function App() {
   useAppMenu();
 
   const loadConnections = useApp((s) => s.loadConnections);
+  const loadSecurity = useApp((s) => s.loadSecurity);
+  const locked = useApp((s) => s.locked);
   const sidebarVisible = useApp((s) => s.sidebarVisible);
   const tabs = useApp((s) => s.tabs);
   const activeTabId = useApp((s) => s.activeTabId);
@@ -98,8 +102,16 @@ export default function App() {
   const mainRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
-    void loadConnections();
-  }, [loadConnections]);
+    void loadSecurity();
+  }, [loadSecurity]);
+
+  // After the lock, not beside it. A connection list read while the lock
+  // screen is up is a list the lock did not cover, and the whole point of the
+  // launch gate is that nothing about which servers exist is on screen behind
+  // it.
+  useEffect(() => {
+    if (!locked) void loadConnections();
+  }, [locked, loadConnections]);
 
   // Pinning writes the pin immediately; this catches what the tab has become
   // since — the statement typed into a pinned query tab — without a storage
@@ -156,6 +168,12 @@ export default function App() {
    */
   const paneTone = (pane: "main" | "split") =>
     splitTab && focusedPane === pane ? "shadow-[inset_0_1px_0_var(--color-accent)]" : "";
+
+  // Ahead of every hook above it? No: the hooks run either way, and a lock
+  // screen that unmounted the whole tree would drop the split ratio and the
+  // pane state the moment it appeared. This replaces what is drawn, not what
+  // is held.
+  if (locked) return <LockScreen />;
 
   return (
     <div className="flex h-full flex-col bg-base">
@@ -219,6 +237,7 @@ export default function App() {
       <CellModal />
       <ConnectionSheet />
       <ExportDialog />
+      <SettingsSheet />
       <ErrorDialog />
 
       {toast && (

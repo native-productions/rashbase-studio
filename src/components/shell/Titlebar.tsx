@@ -13,6 +13,10 @@ import { useApp } from "@/store/app";
  * centre is at 27. Everything in this strip has to share one line with the
  * lights or the strip reads as two rows that failed to line up.
  *
+ * The bar also carries `.titlebar`, which cancels the font-size zoom applied
+ * to the document root. The lights are placed by the OS in device pixels and
+ * do not scale with a preference, so neither may this strip.
+ *
  * If either number below changes, `trafficLightPosition.y` changes with it.
  * wry sets the titlebar container height to `12 + y` and pins it to the top of
  * the window, and the 12px buttons keep their 8px offset inside it, so the
@@ -62,7 +66,7 @@ export function Titlebar() {
       // maximize, on macOS from `mouseup` so the gesture can be cancelled by
       // moving the pointer; `dblclick` fires after that, so a handler of ours
       // would toggle a second time and the window would never come back down.
-      className="flex h-11 shrink-0 items-stretch gap-1 border-b border-line-soft bg-raised pl-traffic pr-2"
+      className="titlebar flex h-11 shrink-0 items-stretch gap-1 border-b border-line-soft bg-raised pl-traffic pr-2"
     >
       {/* The strip itself is the drag surface. Tauri only starts a drag when
           the attribute is on the event target, so the tabs and the new-tab

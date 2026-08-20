@@ -11,6 +11,8 @@ import {
 import { asDbError } from "@/lib/utils/errors";
 import { loadPinnedTabs, savePinnedTabs } from "@/lib/pinnedTabs";
 import { applyTranslucency, loadTranslucency, saveTranslucency } from "@/lib/translucency";
+import { applyPrefs, loadPrefs, savePrefs, type Prefs } from "@/lib/prefs";
+import { biometricSupport, DEFAULT_POLICY, type BiometricSupport } from "@/lib/security";
 import { isServerOnly, siblingSessions } from "@/lib/utils/connections";
 import { isKeyspaceDriver } from "@/lib/constants/connection";
 import {
@@ -28,6 +30,7 @@ import {
   isQueue,
   rowsDeletable,
   tabColumns,
+  tabIdle,
 } from "@/lib/utils/tabs";
 import {
   DEFAULT_PREFIX,
@@ -52,6 +55,7 @@ import type {
   QueueEntry,
   QueryTab,
   SchemaEntry,
+  SecurityPolicy,
   Sort,
   TableEntry,
 } from "@/lib/types";
@@ -172,6 +176,36 @@ interface AppState {
    * changes it, and the palette reads this store.
    */
   translucent: boolean;
+  /**
+   * Theme, font scale, and what opening an object does to the tab strip.
+   *
+   * Beside `translucent` rather than folded into it: both are appearance, but
+   * translucency is one switch the palette has always owned, and these three
+   * are the Settings sheet's own. Persisted by `lib/prefs.ts`.
+   */
+  prefs: Prefs;
+  /** Whether the Settings sheet is open. */
+  settings: boolean;
+  /**
+   * The Touch ID policy, mirrored from the backend.
+   *
+   * A mirror for drawing with, not the thing being obeyed: the gate is in
+   * `commands/security.rs`, in front of the keystore read. Everything here
+   * decides is what the Settings sheet and the sidebar lock glyph show.
+   */
+  security: SecurityPolicy;
+  /** What this platform can actually offer. Resolved once, at launch. */
+  biometrics: BiometricSupport;
+  /**
+   * Whether the app is behind the launch prompt.
+   *
+   * Starts true so the very first frame is the lock screen rather than the
+   * workspace: `loadSecurity` is what lets it go, and it does so immediately
+   * when the policy says the app is not locked. The alternative — start
+   * unlocked, lock once the policy arrives — shows the connection list for one
+   * frame, which is the one thing the lock exists to prevent.
+   */
+  locked: boolean;
   palette: PaletteMode | null;
   /**
    * `credentialLost` means the sheet was opened because the stored password
@@ -369,6 +403,12 @@ interface AppState {
 
   toggleSidebar: () => void;
   toggleTranslucency: () => void;
+  setPrefs: (patch: Partial<Prefs>) => void;
+  setSettings: (open: boolean) => void;
+  loadSecurity: () => Promise<void>;
+  unlock: () => Promise<void>;
+  setSecurity: (patch: Partial<SecurityPolicy>) => Promise<void>;
+  setConnectionBiometric: (id: string, on: boolean) => Promise<void>;
   setPalette: (mode: PaletteMode | null) => void;
   setSheet: (open: boolean, editing?: ConnectionConfig | null, credentialLost?: boolean) => void;
   /** A plain click: this row is where a range would start, and nothing is picked. */
@@ -671,6 +711,11 @@ export const useApp = create<AppState>((set, get) => {
   focusedPane: "main",
   sidebarVisible: true,
   translucent: loadTranslucency(),
+  prefs: loadPrefs(),
+  settings: false,
+  security: DEFAULT_POLICY,
+  biometrics: "unsupported",
+  locked: true,
   palette: null,
   sheet: { open: false, editing: null, credentialLost: false, sshSecretLost: false },
   filterEditor: null,
@@ -1105,8 +1150,38 @@ export const useApp = create<AppState>((set, get) => {
       if (isQueue(object)) void get().pollQueue(existing.id);
       return;
     }
-    const tab = newTab(connectionId, object);
-    set((s) => ({ tabs: [...s.tabs, tab] }));
+    /**
+     * With `tabBehaviour: "idle"` the strip is reused rather than grown: the
+     * tab in the pane the object is heading for gives up its id and becomes
+     * this object, if it has nothing unfinished on it. `tabIdle` is the whole
+     * definition of that; see the comment on it.
+     *
+     * The active tab specifically, not the first idle tab anywhere in the
+     * strip. Replacing a tab the user is not looking at is a worse surprise
+     * than the extra tab this preference exists to avoid.
+     *
+     * Keeping the id is what stops the pane, the focus and the split from
+     * moving underneath the swap. What does *not* survive it: `cellEdit` and
+     * `filterEditor` are keyed by tab id, and an editor left open over a tab
+     * that is now a different table is a write aimed at the wrong row.
+     */
+    const recycled =
+      get().prefs.tabBehaviour === "idle" && pane === "main"
+        ? get().tabs.find(
+            (t) => t.id === get().activeTabId && t.connectionId === connectionId && tabIdle(t, get().splitTabId),
+          )
+        : undefined;
+
+    const tab = recycled
+      ? { ...newTab(connectionId, object), id: recycled.id }
+      : newTab(connectionId, object);
+
+    set((s) => ({
+      tabs: recycled ? s.tabs.map((t) => (t.id === recycled.id ? tab : t)) : [...s.tabs, tab],
+      cellEdit: s.cellEdit?.tabId === tab.id ? null : s.cellEdit,
+      cellView: s.cellView?.tabId === tab.id ? null : s.cellView,
+      filterEditor: s.filterEditor?.tabId === tab.id ? null : s.filterEditor,
+    }));
     showTab(tab.id, pane);
 
     // A diagram is the schema, not a relation in it: there is no page of rows
@@ -2113,6 +2188,81 @@ export const useApp = create<AppState>((set, get) => {
     set({ translucent: on });
     saveTranslucency(on);
     void applyTranslucency(on);
+  },
+  /**
+   * No transition either, and for the same reason: a palette that fades reads
+   * as the app still deciding which one it is.
+   */
+  setPrefs: (patch) => {
+    const prefs = { ...get().prefs, ...patch };
+    set({ prefs });
+    savePrefs(prefs);
+    applyPrefs(prefs);
+  },
+  setSettings: (settings) => set({ settings }),
+
+  /**
+   * Reads the policy and decides whether the lock screen stands.
+   *
+   * Runs before `loadConnections`, and that order is the point: nothing about
+   * which servers exist should be readable behind the lock.
+   */
+  loadSecurity: async () => {
+    try {
+      const [security, available] = await Promise.all([
+        ipc.getSecurityPolicy(),
+        ipc.biometricAvailable(),
+      ]);
+      const ua = typeof navigator === "undefined" ? "" : navigator.userAgent;
+      const biometrics = biometricSupport(available, ua);
+      // A policy that says "lock" on a machine that cannot prompt would be a
+      // door with no handle: the stored preference is honoured only where
+      // there is something to answer it with.
+      set({
+        security,
+        biometrics,
+        locked: security.lockOnLaunch && biometrics === "available",
+      });
+    } catch {
+      /* The backend is what enforces this. A failure to read the policy leaves
+         the window unlocked and every gated `connect` still gated. */
+      set({ locked: false });
+    }
+  },
+
+  unlock: async () => {
+    await ipc.unlockApp();
+    set({ locked: false });
+  },
+
+  /**
+   * Writes the app-wide half of the policy.
+   *
+   * The backend answers with what it stored, and that answer is what lands in
+   * the store — a refusal throws before the write, so the switch springs back
+   * rather than showing a setting that was never saved.
+   */
+  setSecurity: async (patch) => {
+    const security = await ipc.setSecurityPolicy({ ...get().security, ...patch });
+    set({ security });
+  },
+
+  /**
+   * Writes the per-connection half.
+   *
+   * Through `saveConnection` because that is the one path that persists a
+   * connection, with both secrets left alone — this is not the surface where a
+   * password is typed, and passing anything for them here would be a way to
+   * silently clear one.
+   */
+  setConnectionBiometric: async (id, on) => {
+    const config = get().connections.find((c) => c.id === id);
+    if (!config) return;
+    try {
+      await get().saveConnection({ ...config, requireBiometric: on });
+    } catch (e) {
+      set({ toast: { kind: "error", text: asDbError(e).message } });
+    }
   },
   setPalette: (mode) => set({ palette: mode }),
   // Both "lost" flags are cleared here rather than accepted as arguments: the

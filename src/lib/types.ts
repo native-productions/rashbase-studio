@@ -57,6 +57,23 @@ export interface ConnectionConfig {
    * it; the local end of the tunnel never reaches the frontend.
    */
   ssh: SshConfig | null;
+  /**
+   * Ask for Touch ID before opening this one.
+   *
+   * Enforced backend-side, in front of the keystore read, so this field is
+   * what the Settings sheet edits rather than what decides anything: a
+   * frontend that ignored it would still meet the prompt.
+   */
+  requireBiometric: boolean;
+}
+
+/**
+ * The app-wide half of the Touch ID policy. Its per-connection half is
+ * `ConnectionConfig.requireBiometric`.
+ */
+export interface SecurityPolicy {
+  lockOnLaunch: boolean;
+  requireForAllConnections: boolean;
 }
 
 export interface ConnectionInfo {

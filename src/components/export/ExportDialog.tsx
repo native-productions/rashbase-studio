@@ -267,7 +267,7 @@ function Body({ connectionId, seed }: { connectionId: string; seed: string[] }) 
 
   return (
     <Dialog.Portal>
-      <Dialog.Overlay className="overlay-anim fixed inset-0 z-40 bg-black/50" />
+      <Dialog.Overlay className="overlay-anim fixed inset-0 z-40 bg-scrim/50" />
       <Dialog.Content
         aria-describedby={undefined}
         // While an export runs the dialog is the only way to stop it, so it
@@ -515,7 +515,7 @@ function Body({ connectionId, seed }: { connectionId: string; seed: string[] }) 
               onClick={() => (running ? void ipc.cancelExport(running.jobId) : void run())}
               className={[
                 "pressable rounded px-3 py-1.5 text-[12px] font-medium disabled:pointer-events-none disabled:opacity-40",
-                running ? "bg-field text-ink hover:bg-field-hover" : "bg-accent text-canvas",
+                running ? "bg-field text-ink hover:bg-field-hover" : "bg-accent-fill text-on-accent",
               ].join(" ")}
             >
               {running ? "Stop" : "Export"}
@@ -594,7 +594,7 @@ function Box({
         disabled ? "opacity-40" : "",
         state === "off"
           ? "border-line bg-transparent"
-          : "border-accent bg-accent text-canvas",
+          : "border-accent bg-accent-fill text-on-accent",
       ].join(" ")}
     >
       {state === "on" && (

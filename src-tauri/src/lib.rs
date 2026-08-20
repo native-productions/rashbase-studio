@@ -1,3 +1,4 @@
+mod biometric;
 mod commands;
 pub mod drivers;
 mod error;
@@ -24,6 +25,7 @@ pub fn run() {
             Ok(())
         })
         .manage(DbState::default())
+        .manage(commands::AuthState::default())
         .invoke_handler(tauri::generate_handler![
             commands::list_connections,
             commands::save_connection,
@@ -31,6 +33,10 @@ pub fn run() {
             commands::connect,
             commands::disconnect,
             commands::open_connection_ids,
+            commands::biometric_available,
+            commands::get_security_policy,
+            commands::set_security_policy,
+            commands::unlock_app,
             commands::execute_query,
             commands::cancel_query,
             commands::export_objects,

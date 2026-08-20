@@ -10,6 +10,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   ColumnInfo,
+  SecurityPolicy,
   EventPage,
   ConnectionConfig,
   ConnectionInfo,
@@ -64,6 +65,19 @@ export const ipc = {
   disconnect: (id: string) => invoke<void>("disconnect", { id }),
 
   openConnectionIds: () => invoke<string[]>("open_connection_ids"),
+
+  /**
+   * Touch ID. The policy lives on the Rust side rather than in `localStorage`
+   * beside the theme, because the gate it drives sits in front of the keystore
+   * read in `connect` — a policy this window owned would be a policy this
+   * window could skip.
+   */
+  biometricAvailable: () => invoke<boolean>("biometric_available"),
+  getSecurityPolicy: () => invoke<SecurityPolicy>("get_security_policy"),
+  setSecurityPolicy: (policy: SecurityPolicy) =>
+    invoke<SecurityPolicy>("set_security_policy", { policy }),
+  /** Resolves once presence is confirmed, rejects with `AUTH_REFUSED` if not. */
+  unlockApp: () => invoke<void>("unlock_app"),
 
   /**
    * Runs `sql` as given. `maxRows` caps what comes back to the window, not what

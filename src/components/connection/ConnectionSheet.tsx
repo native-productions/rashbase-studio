@@ -8,6 +8,7 @@ import { Select } from "@/components/ui/Select";
 import { ENVIRONMENTS } from "@/lib/constants/environments";
 import { BLANK_CONNECTION, BLANK_SSH, DRIVERS, driverSpec } from "@/lib/constants/connection";
 import { INPUT_CLS } from "@/lib/constants/ui";
+import { GroupRule, Row, Switch } from "@/components/ui/Form";
 import { asDbError } from "@/lib/utils/errors";
 import {
   forDriver,
@@ -17,104 +18,6 @@ import {
 } from "@/lib/utils/connections";
 import { findEnvironment } from "@/lib/utils/environments";
 import type { ConnectionConfig, SshAuth, SshConfig, SslMode } from "@/lib/types";
-
-/**
- * One row of the form: a label in the left column, a control in the right.
- *
- * Fragments rather than a wrapper, so every label and every control is a direct
- * child of the one grid that runs the whole form. That is what holds the two
- * columns to the same edge down the page, through a section the tunnel adds and
- * a hint that only some rows carry. A wrapper per row cannot do it: each row
- * would align only against itself.
- *
- * `id` ties the label to the control it names. Pass `labelId` instead when the
- * control is a group of buttons, which cannot be labelled by `for`.
- */
-function Row({
-  label,
-  id,
-  labelId,
-  hint,
-  children,
-}: {
-  label: string;
-  id?: string;
-  labelId?: string;
-  hint?: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <>
-      {labelId ? (
-        <span id={labelId} className="justify-self-end text-[11px] text-ink-muted">
-          {label}
-        </span>
-      ) : (
-        <label htmlFor={id} className="justify-self-end text-[11px] text-ink-muted">
-          {label}
-        </label>
-      )}
-      <div className="min-w-0">{children}</div>
-      {/* Its own row rather than tucked under the control, so the label beside
-          the control stays vertically centred on it. */}
-      {hint && (
-        <p className="col-start-2 -mt-0.5 text-[10px] leading-snug text-ink-muted">{hint}</p>
-      )}
-    </>
-  );
-}
-
-/** The rule that starts a group, with room for a control that governs it. */
-function GroupRule({ label, id, children }: { label: string; id?: string; children?: React.ReactNode }) {
-  return (
-    <div className="col-span-2 mt-1 flex h-7 items-center gap-3 border-t border-line-soft pt-3">
-      <span id={id} className="label-eyebrow">
-        {label}
-      </span>
-      {children && <div className="ml-auto flex items-center gap-3">{children}</div>}
-    </div>
-  );
-}
-
-/**
- * On/off for a whole section of the form.
- *
- * Only the thumb moves, and only by transform: the track's colour flips on the
- * same frame as the click, because a colour that fades is a control that looks
- * like it is still deciding.
- */
-function Switch({
-  checked,
-  onChange,
-  labelledBy,
-}: {
-  checked: boolean;
-  onChange: (checked: boolean) => void;
-  labelledBy: string;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-labelledby={labelledBy}
-      onClick={() => onChange(!checked)}
-      className={[
-        "pressable h-4 w-7 shrink-0 rounded-full border p-0",
-        "focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-accent",
-        checked ? "border-accent bg-accent" : "border-transparent bg-field hover:bg-field-hover",
-      ].join(" ")}
-    >
-      <span
-        aria-hidden="true"
-        className={[
-          "block size-2.5 rounded-full duration-150 ease-[var(--ease-out-quart)] transition-transform",
-          checked ? "translate-x-[13px] bg-canvas" : "translate-x-[2px] bg-ink-faint",
-        ].join(" ")}
-      />
-    </button>
-  );
-}
 
 /**
  * One choice out of a handful, as one track rather than a row of buttons.
@@ -331,7 +234,7 @@ export function ConnectionSheet() {
         {/* Darker than it was, because the sheet is now darker than the app:
             the scrim has to fall below the sheet for the sheet to read as the
             nearer surface. */}
-        <Dialog.Overlay className="overlay-anim fixed inset-0 z-40 bg-black/70" />
+        <Dialog.Overlay className="overlay-anim fixed inset-0 z-40 bg-scrim/70" />
         <Dialog.Content
           aria-describedby={undefined}
           onSubmit={(e) => e.preventDefault()}
@@ -735,7 +638,7 @@ export function ConnectionSheet() {
               <button
                 disabled={busy || testing}
                 onClick={() => void submit()}
-                className="pressable h-7 rounded-md bg-accent px-3 text-[12px] font-medium text-canvas hover:bg-accent/90 disabled:opacity-50"
+                className="pressable h-7 rounded-md bg-accent-fill px-3 text-[12px] font-medium text-on-accent hover:bg-accent-fill/90 disabled:opacity-50"
               >
                 {busy ? "Connecting…" : "Connect"}
               </button>

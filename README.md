@@ -611,7 +611,35 @@ SSH tunnelling works: a connection can dial through a jump host, authenticating
 with a key or a password. Unknown host keys are refused rather than trusted on
 first use.
 
-Not built yet: inserting rows, query history, and AI. On queues:
+**Rashbase Studio → Settings…** (`⌘,`, or the command palette) holds the
+preferences:
+
+- **Theme** — dark or light. The light palette is warm paper at the same
+  contrast ratio, with the yellow kept as the primary; the two are picked from
+  miniatures of the app rather than from the words.
+- **Text size** — four steps from Compact to Larger, applied as one zoom over
+  the whole window. The tab strip keeps its size, because the macOS traffic
+  lights beside it are placed by the system and do not scale.
+- **Opening a table** — a new tab every time, which is the default, or reuse
+  the tab you are on when it has nothing unfinished: no filter, no staged
+  deletions, no picked rows, no running query, no typed SQL, not pinned, and
+  not the other half of a split.
+- **Window translucency** — the same switch the palette has always carried.
+
+**Touch ID (macOS only).** The Security section can require a fingerprint when
+the app opens, before every connection, or before named connections. The check
+runs in the Rust backend ahead of the keystore lookup, so a refusal means the
+password was never read; one confirmation covers the next five minutes, so
+switching database does not ask again.
+
+Be clear about what it is: a lock on this app's windows, not encryption.
+Passwords stay in the system keychain, readable by Rashbase Studio without a
+fingerprint, and `connections.json` is readable by anything with access to your
+files. Windows Hello is not built yet, and the Security section says so rather
+than showing a switch that does nothing.
+
+Not built yet: inserting rows, query history, and AI. Windows Hello and any
+Linux equivalent of Touch ID. On queues:
 removing and promoting jobs, and a configurable key prefix — the walk assumes
 BullMQ's default `bull`. For databases, see
 [Database support](#database-support).

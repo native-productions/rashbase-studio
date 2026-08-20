@@ -58,6 +58,25 @@ uuid = { version = "1", features = ["v4", "serde"] }
 russh = { version = "0.62.6", default-features = false, features = ["ring", "rsa", "flate2"] }
 tauri-plugin-dialog = "2"
 
+# Touch ID. `LocalAuthentication` is the only way to ask macOS for a
+# fingerprint, and it is Objective-C, so these are the bindings for it: `objc2`
+# is the runtime, `block2` is the completion block `evaluatePolicy` answers
+# through, and the other two are the frameworks themselves.
+#
+# Target-gated because Touch ID is macOS. Windows Hello would be a second
+# implementation behind the same `biometric` module, not a widening of this.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+# Default features pull in `objc2-security` for the private-key APIs, which
+# nothing here uses. Only the context and its reply block.
+objc2-local-authentication = { version = "0.3", default-features = false, features = [
+    "std",
+    "LAContext",
+    "block2",
+] }
+block2 = "0.6"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 

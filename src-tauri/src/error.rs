@@ -49,6 +49,14 @@ pub enum Error {
     #[error("{0}")]
     SshSecretRequired(String),
 
+    /// The person at the keyboard did not confirm they are there — Touch ID
+    /// was cancelled, refused, or is not available. Carries the platform's own
+    /// words, and is coded so the frontend can tell it apart from a connection
+    /// that failed: this one must not reopen the sheet asking for a password,
+    /// because the password was never the problem.
+    #[error("{0}")]
+    AuthRefused(String),
+
     /// The user stopped an export while it was running. Coded so the frontend
     /// can say "stopped" rather than showing it as a failure: nothing went
     /// wrong, and the partial file has already been removed.
@@ -137,6 +145,11 @@ pub const CREDENTIAL_UNREADABLE: &str = "CREDENTIAL_UNREADABLE";
 /// rather than on the database password the user did not get asked for.
 pub const SSH_SECRET_REQUIRED: &str = "SSH_SECRET_REQUIRED";
 
+/// Error code for a refused or cancelled Touch ID prompt. The frontend matches
+/// on it to report the refusal plainly instead of treating it as a broken
+/// credential.
+pub const AUTH_REFUSED: &str = "AUTH_REFUSED";
+
 /// Error code for work the user stopped on purpose. The frontend matches on it
 /// to close quietly instead of raising an error toast.
 pub const CANCELLED: &str = "CANCELLED";
@@ -180,6 +193,13 @@ impl Serialize for Error {
             Error::Cancelled => ErrorPayload {
                 message: self.to_string(),
                 code: Some(CANCELLED),
+                detail: None,
+                hint: None,
+                position: None,
+            },
+            Error::AuthRefused(_) => ErrorPayload {
+                message: self.to_string(),
+                code: Some(AUTH_REFUSED),
                 detail: None,
                 hint: None,
                 position: None,

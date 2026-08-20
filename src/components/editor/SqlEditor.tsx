@@ -49,76 +49,91 @@ const highlight = HighlightStyle.define([
       base  .ͼ1.ͼ3 .cm-activeLine                          (0,3,0)
       base  .ͼ1.ͼ3.cm-focused > .cm-scroller > …           (0,6,0)
 
-  So every colour that also has a `&dark` rule upstream loses no matter how
-  long a selector we write — matching the longest base path still only reaches
-  (0,5,0). Dropping `dark: true` does not help either: the editor then picks up
-  the `&light` rules instead, which are worse. Marked declarations are exactly
-  the ones that collide, checked against `&dark` in @codemirror/view.
+  So every colour that also has a base rule upstream loses no matter how long a
+  selector we write — matching the longest base path still only reaches
+  (0,5,0). That is true of the `&light` set as much as the `&dark` one, so the
+  marks are needed under either palette. They are exactly the declarations that
+  collide, checked against both in @codemirror/view.
 */
-const theme = EditorView.theme(
-  {
-    "&": {
-      height: "100%",
-      fontSize: "12px",
-      backgroundColor: "var(--color-canvas)",
-      color: "var(--color-ink)",
-    },
-    ".cm-content": {
-      fontFamily: "var(--font-mono)",
-      padding: "8px 0",
-      caretColor: "var(--color-accent) !important",
-    },
-    ".cm-scroller": { fontFamily: "var(--font-mono)", lineHeight: "1.6" },
-    "&.cm-focused": { outline: "none" },
-    ".cm-gutters": {
-      backgroundColor: "var(--color-canvas) !important",
-      color: "var(--color-ink-faint) !important",
-      border: "none !important",
-      paddingRight: "4px",
-    },
-    ".cm-activeLineGutter": {
-      backgroundColor: "transparent !important",
-      color: "var(--color-ink-muted) !important",
-    },
-    /*
-      Translucent, not opaque. The active line is a decoration inside
-      `.cm-content`, which paints above `.cm-selectionLayer`, so an opaque fill
-      hides the selection on whichever line holds the cursor — which is every
-      line after ⌘A, and the exact reason the last line looked unselected.
-    */
-    ".cm-activeLine": { backgroundColor: "oklch(0.85 0.02 90 / 0.06) !important" },
-    ".cm-selectionBackground": { backgroundColor: "var(--color-selection) !important" },
-    "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground": {
-      backgroundColor: "var(--color-selection) !important",
-    },
-    ".cm-content ::selection": { backgroundColor: "var(--color-selection) !important" },
-    ".cm-cursor, .cm-dropCursor": {
-      borderLeftColor: "var(--color-accent) !important",
-      borderLeftWidth: "2px",
-    },
-    /* Other occurrences of the selected word: the same yellow, weaker, so the
-       real selection still reads as the one the pointer made. */
-    ".cm-selectionMatch": { backgroundColor: "var(--color-selection-soft)" },
-    ".cm-tooltip": {
-      backgroundColor: "var(--color-overlay) !important",
-      border: "1px solid var(--color-line) !important",
-      borderRadius: "6px",
-      fontFamily: "var(--font-sans)",
-      fontSize: "12px",
-    },
-    ".cm-tooltip-autocomplete ul li[aria-selected]": {
-      backgroundColor: "var(--color-accent-wash)",
-      color: "var(--color-ink)",
-    },
+const RULES = {
+  "&": {
+    height: "100%",
+    fontSize: "12px",
+    backgroundColor: "var(--color-canvas)",
+    color: "var(--color-ink)",
   },
-  { dark: true },
-);
+  ".cm-content": {
+    fontFamily: "var(--font-mono)",
+    padding: "8px 0",
+    caretColor: "var(--color-accent) !important",
+  },
+  ".cm-scroller": { fontFamily: "var(--font-mono)", lineHeight: "1.6" },
+  "&.cm-focused": { outline: "none" },
+  ".cm-gutters": {
+    backgroundColor: "var(--color-canvas) !important",
+    color: "var(--color-ink-faint) !important",
+    border: "none !important",
+    paddingRight: "4px",
+  },
+  ".cm-activeLineGutter": {
+    backgroundColor: "transparent !important",
+    color: "var(--color-ink-muted) !important",
+  },
+  /*
+    Translucent, not opaque. The active line is a decoration inside
+    `.cm-content`, which paints above `.cm-selectionLayer`, so an opaque fill
+    hides the selection on whichever line holds the cursor — which is every
+    line after ⌘A, and the exact reason the last line looked unselected.
+  */
+  ".cm-activeLine": { backgroundColor: "var(--color-hover) !important" },
+  ".cm-selectionBackground": { backgroundColor: "var(--color-selection) !important" },
+  "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground": {
+    backgroundColor: "var(--color-selection) !important",
+  },
+  ".cm-content ::selection": { backgroundColor: "var(--color-selection) !important" },
+  ".cm-cursor, .cm-dropCursor": {
+    borderLeftColor: "var(--color-accent) !important",
+    borderLeftWidth: "2px",
+  },
+  /* Other occurrences of the selected word: the same yellow, weaker, so the
+     real selection still reads as the one the pointer made. */
+  ".cm-selectionMatch": { backgroundColor: "var(--color-selection-soft)" },
+  ".cm-tooltip": {
+    backgroundColor: "var(--color-overlay) !important",
+    border: "1px solid var(--color-line) !important",
+    borderRadius: "6px",
+    fontFamily: "var(--font-sans)",
+    fontSize: "12px",
+  },
+  ".cm-tooltip-autocomplete ul li[aria-selected]": {
+    backgroundColor: "var(--color-accent-wash)",
+    color: "var(--color-ink)",
+  },
+};
+
+/**
+ * One theme extension per palette, built once.
+ *
+ * The `dark` flag is what decides whether CodeMirror applies its `&dark` or
+ * `&light` base rules, and every colour we do not override falls through to
+ * that set — a theme built with `dark: true` running on paper renders those in
+ * CodeMirror's dark palette, with nothing on screen to explain why. The flag
+ * cannot be changed on a live extension, so switching palette rebuilds the
+ * view. That is the same bargain the Redis console makes below, and acceptable
+ * for the same reason: it happens when a preference changes, not while anyone
+ * is typing.
+ */
+const THEMES = {
+  dark: EditorView.theme(RULES, { dark: true }),
+  light: EditorView.theme(RULES, { dark: false }),
+} as const;
 
 export function SqlEditor({ tabId, value }: { tabId: string; value: string }) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const setTabSql = useApp((s) => s.setTabSql);
 
+  const appTheme = useApp((s) => s.prefs.theme);
   const activeConnectionId = useApp((s) => s.activeConnectionId);
   const schemas = useApp((s) => s.schemas);
   const tables = useApp((s) => s.tables);
@@ -172,7 +187,7 @@ export function SqlEditor({ tabId, value }: { tabId: string; value: string }) {
             sql({ dialect: PostgreSQL, schema: completionSchema, upperCaseKeywords: false }),
             placeholder("Write SQL, then ⌘⏎ to run. Select a fragment to run only that."),
           ]),
-      theme,
+      THEMES[appTheme],
       EditorView.lineWrapping,
       // ⌘⏎ is deliberately absent: the global hotkey layer owns it, so the
       // palette and the keyboard can never disagree about what it does.
@@ -207,8 +222,9 @@ export function SqlEditor({ tabId, value }: { tabId: string; value: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     // `console` too: switching a tab between a SQL server and a key-value store
     // changes which language extension is loaded, and CodeMirror cannot be told
-    // that without rebuilding the view.
-  }, [tabId, completionSchema, console]);
+    // that without rebuilding the view. `appTheme` for the same reason: the
+    // `dark` flag is fixed when the theme extension is built.
+  }, [tabId, completionSchema, console, appTheme]);
 
   return <div ref={host} className="h-full overflow-hidden" />;
 }

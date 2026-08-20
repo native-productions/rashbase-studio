@@ -54,6 +54,8 @@ src/
   lib/ipc.ts          Typed wrappers over the Tauri command surface
   lib/commands.ts     Command registry: one source for hotkeys, palette, menu
   lib/hotkeys.ts      Single keydown listener resolving against the registry
+  lib/prefs.ts        Theme, text size, tab behaviour — localStorage
+  lib/security.ts     Touch ID: platform support and the read-only mirror
   lib/constants/      Lookup tables, class strings, shared metrics
   lib/utils/          Pure functions: SQL builders, filters, row identity
   store/app.ts        Zustand state, and where IPC calls are made from
@@ -72,6 +74,7 @@ src-tauri/src/
   drivers/redis/lua/  BullMQ's own scripts, vendored verbatim
   ssh.rs              SSH tunnel, known_hosts enforced
   keychain.rs         OS keystore wrapper
+  biometric.rs        Touch ID via LocalAuthentication, macOS only
   error.rs            One serializable error shape
 ```
 
@@ -112,7 +115,15 @@ Break these and the change is wrong regardless of whether it compiles.
     `drivers/redis/lua/reprocess_job.lua` is BullMQ's own, flattened. Its header
     names the upstream files and the one thing that will not fail loudly on an
     upgrade: the KEYS order is positional and nothing complains when it drifts.
-11. **A rate is measured or it is absent.** Never zero for "we could not tell".
+11. **A preference that gates a secret is enforced backend-side, in front of
+    the read.** Appearance and layout live in `localStorage` (`lib/prefs.ts`,
+    `translucency.ts`, `pinnedTabs.ts`, `erdPrefs.ts`) because nothing on the
+    Rust side needs them. The Touch ID policy does not: it lives in
+    `security.json` and on `ConnectionConfig.require_biometric`, and the gate
+    runs in `session::connect` *before* the keystore lookup. A gate the webview
+    drew is a gate a compromised webview skips, and a refusal has to mean the
+    secret was never read rather than read and then not used.
+12. **A rate is measured or it is absent.** Never zero for "we could not tell".
     The queue diagram reads transitions off the event stream and reports `null`
     when that stream was trimmed past the resume point, because a rate derived
     from a gapped window is a number that looks like a measurement.
@@ -133,7 +144,12 @@ encouragement, no marketing voice. State facts.
 is wrapped in a container unless the container does something.
 
 **Colour comes from `styles/theme.css`.** Never write a raw colour in a
-component. The accent covers under 10% of surface area and appears on exactly
+component. Two palettes share one set of names: `@theme` declares
+`--color-*` as references to `--t-*`, and the `[data-theme]` blocks hold the
+values, so a palette can be applied to any element rather than only `:root`.
+Anything filled with the accent takes `bg-accent-fill` and `text-on-accent`,
+not `bg-accent` and `text-canvas` — on light those are two different yellows
+and near-white text on one of them. The accent covers under 10% of surface area and appears on exactly
 five things (active tab, focus ring, selected cell, primary button, SQL
 keywords).
 
