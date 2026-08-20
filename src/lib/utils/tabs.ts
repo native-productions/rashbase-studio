@@ -10,7 +10,7 @@ import type { ColumnInfo, DbObject, QueryTab } from "@/lib/types";
  * gated on it, so a kind that has no rows only has to say so once.
  */
 export const hasRows = (o: DbObject | null): boolean =>
-  o !== null && o.kind !== "function" && o.kind !== "diagram";
+  o !== null && o.kind !== "function" && o.kind !== "diagram" && o.kind !== "queue";
 
 /**
  * Whether this tab is a flat key namespace rather than a relation.
@@ -21,13 +21,24 @@ export const hasRows = (o: DbObject | null): boolean =>
  */
 export const isKeyspace = (o: DbObject | null): boolean => o?.kind === "keyspace";
 
+/**
+ * Whether this tab is a BullMQ queue.
+ *
+ * A queue does have rows — its jobs — but `hasRows` is false for it, and that
+ * is deliberate rather than an oversight. `hasRows` gates the machinery that
+ * assumes a relation: a generated `select`, a column fetch, the filter bar, the
+ * offset pager. A queue's rows come from a state the user picked on a diagram,
+ * so none of that applies. This is the test for the parts that do.
+ */
+export const isQueue = (o: DbObject | null): boolean => o?.kind === "queue";
+
 export function viewsFor(object: DbObject | null): QueryTab["view"][] {
   if (!object) return [];
   if (object.kind === "diagram") return ["diagram"];
   if (object.kind === "function") return ["definition"];
   // A keyspace has no structure to show: every key is its own shape, which is
   // the whole difference between this and a table.
-  if (object.kind === "keyspace") return ["data"];
+  if (object.kind === "keyspace" || object.kind === "queue") return ["data"];
   if (object.kind === "view" || object.kind === "matview") {
     return ["data", "structure", "definition"];
   }
@@ -47,12 +58,35 @@ export function editableReason(tab: QueryTab): string | null {
   // to refuse at the tab level: what can be written is decided per cell, by
   // which column it is in and what type the key holds.
   if (tab.object.kind === "keyspace") return null;
+  // A job is a record of something that already ran. Editing one in place would
+  // not change what happened, and BullMQ's own state lives in fields no cell
+  // here maps to — retrying is the operation this surface offers instead.
+  if (tab.object.kind === "queue") return "A job is not edited. Stage a retry instead.";
   if (tab.object.kind !== "table") return `A ${tab.object.kind} has no rows of its own to edit.`;
   if (!tab.columns) return "Reading the table definition…";
   if (!tab.columns.some((c) => c.primaryKey)) {
     return `${tab.object.schema}.${tab.object.name} has no primary key, so a single row cannot be identified.`;
   }
   return null;
+}
+
+/**
+ * Whether whole rows on this tab can be marked for deletion.
+ *
+ * The same question `editableReason` answers for a cell, narrowed to the tabs
+ * where a *row* is the thing being acted on. A keyspace passes the edit test —
+ * a key is its own identity — but its deletion is `delete_keys`, not a `where`
+ * clause; a queue's mark means retry and is deliberately not red. Both are
+ * excluded here so ⌘S can only ever mean one of the three.
+ *
+ * One definition because three surfaces ask it: the grid decides whether Delete
+ * marks a row, the status bar decides which footer to draw, and the command
+ * decides what ⌘S does. Two copies would let ⌘S delete on a tab the grid never
+ * offered to mark.
+ */
+export function rowsDeletable(tab: QueryTab): boolean {
+  if (!tab.object || isKeyspace(tab.object) || isQueue(tab.object)) return false;
+  return editableReason(tab) === null;
 }
 
 /**

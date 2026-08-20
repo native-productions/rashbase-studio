@@ -2,10 +2,12 @@ import { expect, test } from "bun:test";
 import {
   forDriver,
   parseConnectionString,
+  siblingSessions,
   sslModeThroughTunnel,
   tildePath,
 } from "@/lib/utils/connections";
 import { BLANK_CONNECTION } from "@/lib/constants/connection";
+import type { ConnectionConfig } from "@/lib/types";
 
 test("parses a full connection string", () => {
   const r = parseConnectionString("postgresql://ada:s3cret@db.example.com:6543/shop?sslmode=require");
@@ -124,4 +126,49 @@ test("shortens a picked key path to ~ only when it really is under home", () => 
   expect(tildePath("/Users/adamson/keys/id_rsa", "/Users/ada")).toBe("/Users/adamson/keys/id_rsa");
   expect(tildePath("/etc/ssh/host_key", "/Users/ada")).toBe("/etc/ssh/host_key");
   expect(tildePath("/anything", "")).toBe("/anything");
+});
+
+/**
+ * One database at a time per server.
+ *
+ * The failure this names is the quiet one: a sweep that reaches too far closes
+ * the production replica the user was holding open in the other half of the
+ * sidebar, or closes the server session that lists the databases and makes
+ * going back cost a reconnect. Both look like the app losing a connection for
+ * no reason, and neither shows up as an error.
+ */
+const conn = (id: string, parentId: string | null = null): ConnectionConfig => ({
+  ...BLANK_CONNECTION,
+  id,
+  name: id,
+  parentId,
+});
+
+const group = [
+  conn("local"),
+  conn("app", "local"),
+  conn("archive", "local"),
+  conn("prod"),
+  conn("prod-app", "prod"),
+];
+
+test("switching database closes the sibling and leaves the server session", () => {
+  const open = ["local", "app", "archive"];
+  expect(siblingSessions(group, open, "app")).toEqual(["archive"]);
+});
+
+test("another server's databases are never swept", () => {
+  const open = ["local", "app", "prod", "prod-app"];
+  // Holding a local Postgres and a production replica open at once is the
+  // point of the nesting, not an accident to clean up.
+  expect(siblingSessions(group, open, "app")).toEqual([]);
+});
+
+test("focusing the server itself closes the databases picked off it", () => {
+  const open = ["local", "app", "archive"];
+  expect(siblingSessions(group, open, "local")).toEqual(["app", "archive"]);
+});
+
+test("a connection that is not in the list sweeps nothing", () => {
+  expect(siblingSessions(group, ["local", "app"], "gone")).toEqual([]);
 });

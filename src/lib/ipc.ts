@@ -10,6 +10,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   ColumnInfo,
+  EventPage,
   ConnectionConfig,
   ConnectionInfo,
   ExportFormat,
@@ -18,9 +19,14 @@ import type {
   ExportSummary,
   FunctionEntry,
   IndexInfo,
+  JobPage,
   KeyFilter,
   KeyPage,
+  QueueEntry,
+  QueuePage,
   QueryResult,
+  RetryOutcome,
+  RetryRequest,
   RowCount,
   RowKey,
   SchemaEntry,
@@ -84,6 +90,16 @@ export const ipc = {
     value: string | null,
     keys: RowKey[],
   ) => invoke<string | null>("update_cell", { id, schema, table, column, value, keys }),
+
+  /**
+   * Removes whole rows and answers with how many went.
+   *
+   * Each row is named by its primary key, the same identity the cell write
+   * uses. The `where` clause is built backend side from the catalogue; this
+   * says which rows, never how they are found.
+   */
+  deleteRows: (id: string, schema: string, table: string, rows: RowKey[][]) =>
+    invoke<number>("delete_rows", { id, schema, table, rows }),
 
   /**
    * Dumps the named relations into `directory`.
@@ -173,4 +189,41 @@ export const ipc = {
    */
   deleteKeys: (id: string, keys: string[]) =>
     invoke<number>("delete_keys", { id, keys }),
+
+  // -- BullMQ ---------------------------------------------------------------
+  //
+  // Redis-only; every other connection answers that it does not support them.
+  // `prefix` travels on every call rather than being remembered per session:
+  // it belongs to the application that wrote the keys, and one Redis instance
+  // can hold queues from more than one.
+
+  listQueues: (id: string, prefix: string, cursor: number, limit: number) =>
+    invoke<QueuePage>("list_queues", { id, prefix, cursor, limit }),
+
+  /** One queue's counts, without the discovery walk. What a live tab polls. */
+  queueCounts: (id: string, prefix: string, queue: string) =>
+    invoke<QueueEntry>("queue_counts", { id, prefix, queue }),
+
+  listJobs: (
+    id: string,
+    prefix: string,
+    queue: string,
+    state: string,
+    offset: number,
+    limit: number,
+  ) => invoke<JobPage>("list_jobs", { id, prefix, queue, state, offset, limit }),
+
+  /** `after` is the previous page's `lastId`; absent starts from the recent
+   *  end rather than from the beginning of a ten-thousand entry stream. */
+  queueEvents: (id: string, prefix: string, queue: string, after: string | null, limit: number) =>
+    invoke<EventPage>("queue_events", { id, prefix, queue, after, limit }),
+
+  /**
+   * Moves finished jobs back into `wait`, running BullMQ's own script.
+   *
+   * Reports each job separately: a batch where some ids were already retried
+   * elsewhere is a partial result rather than a failure.
+   */
+  retryJobs: (id: string, req: RetryRequest) =>
+    invoke<RetryOutcome[]>("retry_jobs", { id, req }),
 };

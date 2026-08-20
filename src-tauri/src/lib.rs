@@ -37,6 +37,7 @@ pub fn run() {
             commands::cancel_export,
             commands::export_target_exists,
             commands::update_cell,
+            commands::delete_rows,
             commands::list_databases,
             commands::list_schemas,
             commands::list_tables,
@@ -50,6 +51,11 @@ pub fn run() {
             commands::view_definition,
             commands::list_keys,
             commands::delete_keys,
+            commands::list_queues,
+            commands::queue_counts,
+            commands::list_jobs,
+            commands::queue_events,
+            commands::retry_jobs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Rashbase Studio");

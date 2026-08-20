@@ -368,7 +368,14 @@ export interface DbObject {
    * database. Everything downstream — dedupe, pinning, the tab strip, the grid
    * — works without knowing a second tab kind exists.
    */
-  kind: TableEntry["kind"] | "function" | "diagram" | "keyspace";
+  /**
+   * `"queue"` is the third use of the same trick: a BullMQ queue's tab is an
+   * object tab whose object is the queue, with `schema` and `name` both the
+   * queue's own name. Which state is being looked at lives on the tab rather
+   * than in the object, so opening a queue twice from two different states is
+   * still one tab.
+   */
+  kind: TableEntry["kind"] | "function" | "diagram" | "keyspace" | "queue";
   /** Functions only. They are keyed by oid because overloads share a name. */
   oid?: number;
 }
@@ -412,6 +419,19 @@ export interface QueryTab {
    */
   staged: string[];
   /**
+   * Rows picked out but not yet marked for anything, by the same identity
+   * `staged` uses.
+   *
+   * Separate from `staged` because they are different statements: picked means
+   * "these are the rows I mean", staged means "these are going". Delete turns
+   * one into the other, which is what makes a bulk delete the same gesture as a
+   * single one rather than a second feature.
+   *
+   * Separate from `selection` because that is the cell cursor — one cell, which
+   * is what the editor and the row panel act on. This is a set of whole rows.
+   */
+  selectedRows: string[];
+  /**
    * Query tabs: whether the last run wrapped the SQL so it could be paged.
    * False means the rows on screen are however many the cap allowed.
    */
@@ -437,6 +457,12 @@ export interface QueryTab {
    * cache so closing the tab is what forgets it.
    */
   graph: SchemaGraph | null;
+  /**
+   * Queue tabs only: the counts, the measured rates, and the tail of the event
+   * stream the trace is drawn from. Held on the tab rather than in a shared
+   * cache so closing the tab is what forgets it, exactly like `graph`.
+   */
+  queue: QueueView | null;
   /** Which cell the grid, the row panel, and the cell editor all point at. */
   selection: { row: number; col: number } | null;
   /** Source of a view or function, fetched the first time it is looked at. */
@@ -452,4 +478,144 @@ export interface QueryTab {
    * `durationMs` is what a large result set actually costs to move.
    */
   clientMs: number | null;
+}
+
+// ---------------------------------------------------------------------------
+// BullMQ
+//
+// Redis-only. BullMQ is a key layout one Node library writes, so nothing here
+// is part of the contract a driver has to satisfy — it is what the Redis
+// driver's `bull` module sends when it is asked about queues.
+// ---------------------------------------------------------------------------
+
+/** One queue, and how much is sitting in each of its states. */
+export interface QueueEntry {
+  name: string;
+  /** Keyed by the state key: `wait`, `active`, `delayed`, `prioritized`,
+   *  `waiting-children`, `completed`, `failed`. Exact, from LLEN and ZCARD. */
+  counts: Record<string, number>;
+  /** `paused` on the queue's meta hash. A queue-level fact, not a state. */
+  paused: boolean;
+  /** Non-zero only against BullMQ v4 and earlier, where pausing moved jobs
+   *  into their own list. Retry refuses on such a queue. */
+  legacyPaused: number;
+}
+
+export interface QueuePage {
+  queues: QueueEntry[];
+  cursor: number;
+  /** Keys the discovery walk touched, which is what it cost. */
+  scanned: number;
+  exhausted: boolean;
+}
+
+/** One job, as its hash holds it. */
+export interface JobEntry {
+  id: string;
+  /**
+   * The hash verbatim. Not narrowed to named fields because the set moves
+   * between BullMQ versions — `atm` became `attemptsMade`, `ats` arrived later
+   * — and a fixed shape would silently drop whatever it did not know about.
+   */
+  fields: Record<string, string>;
+  /** The sorted-set score, where the state has one. Meaning is per state:
+   *  `delayed` packs the ready-at timestamp, `completed` and `failed` hold the
+   *  finish time outright. */
+  score: number | null;
+}
+
+export interface JobPage {
+  jobs: JobEntry[];
+  /** Everything in the state, not just this page. */
+  total: number;
+  /** Which end of the queue this page came from. `wait` is popped from its
+   *  tail, so its page is not in list order and the footer has to say so. */
+  order: "next-first" | "recent-first";
+}
+
+/** One entry off a queue's event stream. */
+export interface QueueEvent {
+  /** `<ms>-<seq>`. Doubles as the resume point and as the event's timestamp. */
+  id: string;
+  fields: Record<string, string>;
+}
+
+export interface EventPage {
+  events: QueueEvent[];
+  lastId: string;
+  /**
+   * The server's own clock in milliseconds, at the moment of the read.
+   *
+   * Stream ids are stamped by the server, and a rate is events divided by how
+   * long ago they were. Dividing by the client's clock makes the rate wrong by
+   * however far the two machines have drifted, which on a laptop talking to a
+   * production replica is not hypothetical.
+   */
+  serverNow: number;
+  /** Set when the stream was trimmed past the resume point, so transitions
+   *  happened that this page cannot account for. Rates derived from a gapped
+   *  window are wrong, and this is what stops them being shown as a number. */
+  trimmed: boolean;
+}
+
+/** What one job's retry did. BullMQ's own codes, not collapsed to a boolean. */
+export interface RetryOutcome {
+  jobId: string;
+  /** `1` moved it, `-1` the job is gone, `-3` it was not in that state. */
+  code: number;
+}
+
+export interface RetryRequest {
+  prefix: string;
+  queue: string;
+  /** `failed` or `completed`. Nothing else has a finished set to move out of. */
+  state: string;
+  jobIds: string[];
+  resetAttemptsMade: boolean;
+}
+
+/** Everything a queue tab holds that a table tab has no use for. */
+export interface QueueView {
+  /** What the application prefixes its keys with. `bull` unless told otherwise. */
+  prefix: string;
+  counts: Record<string, number>;
+  paused: boolean;
+  legacyPaused: number;
+  /** Which state's jobs are in `results`. Null means no state is open. */
+  state: string | null;
+  /**
+   * The same page of jobs as `results` holds, unformatted.
+   *
+   * Kept alongside rather than derived back out of the grid, because the trace
+   * needs the fields the grid has no column for — `stacktrace`, `parentKey`,
+   * the raw timestamps — and reading them back off formatted cells would mean
+   * parsing "1.50s" into milliseconds again.
+   */
+  jobs: JobEntry[];
+  /** Which end of the queue `jobs` came from, for the footer to state. */
+  order: JobPage["order"];
+  /**
+   * Where the event stream stood when `jobs` was read.
+   *
+   * A resume point rather than a timestamp, so "what has happened since" is an
+   * exact answer with no clock in it: the events after this id are precisely
+   * the ones the page on screen does not account for.
+   */
+  readAtEventId: string;
+  /** Everything in the open state, which is more than this page. */
+  total: number;
+  /**
+   * Transitions per second, keyed by edge id.
+   *
+   * `null` rather than an empty map when the event stream was trimmed past the
+   * resume point: a rate computed from a gapped window is wrong, and drawing a
+   * zero would claim the queue is idle when it may be the busiest it has been.
+   */
+  rates: Record<string, number> | null;
+  /** Resume point for the next poll of the event stream. */
+  lastEventId: string;
+  /** The recent tail, newest last. What a single job's timeline is read from. */
+  events: QueueEvent[];
+  /** Whether the tab is polling. Paused by the user, or by losing focus. */
+  live: boolean;
 }

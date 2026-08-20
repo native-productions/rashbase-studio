@@ -18,7 +18,7 @@ use tokio::sync::Mutex;
 
 use crate::drivers::postgres::catalog;
 use crate::drivers::postgres::dump;
-use crate::drivers::postgres::sql::build_update;
+use crate::drivers::postgres::sql::{build_delete, build_update};
 use crate::drivers::postgres::types::classify;
 use crate::drivers::types::{
     ColumnInfo, ColumnMeta, ConnectionInfo, DumpStats, ExportRequest, FunctionEntry, IndexInfo,
@@ -62,6 +62,10 @@ impl PgSession {
 impl Session for PgSession {
     fn info(&self) -> &ConnectionInfo {
         &self.info
+    }
+
+    fn as_any(&self) -> &(dyn std::any::Any + Send + Sync) {
+        self
     }
 
     async fn close(&self) -> Result<()> {
@@ -305,6 +309,91 @@ impl Session for PgSession {
         tx.commit().await?;
 
         Ok(updated.into_iter().next().flatten())
+    }
+
+    /// Removes whole rows, each identified by the table's own primary key.
+    ///
+    /// Every check `update_cell` makes, made again: a view has no rows of its
+    /// own, a table with no primary key cannot name one row, and a caller that
+    /// names anything other than the whole primary key is asking for a `where`
+    /// clause this application did not derive.
+    ///
+    /// One statement per row inside one transaction. `delete ... where pk in
+    /// (...)` would be fewer round trips and would also report "3 of 5" with no
+    /// way to say which two, so each row is checked for exactly one match and
+    /// anything else rolls the whole set back.
+    async fn delete_rows(
+        &self,
+        schema: &str,
+        table: &str,
+        rows: &[Vec<(String, String)>],
+    ) -> Result<u64> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
+
+        let mut guard = self.conn.lock().await;
+        let conn = self.live(&mut guard)?;
+
+        match catalog::relkind(conn, schema, table).await?.as_deref() {
+            Some("r") | Some("p") => {}
+            Some(_) => {
+                return Err(Error::other(format!(
+                    "{schema}.{table} is not a table, so its rows cannot be deleted"
+                )))
+            }
+            None => return Err(Error::other(format!("{schema}.{table} no longer exists"))),
+        }
+
+        let columns = catalog::list_columns(conn, schema, table).await?;
+        let pk: Vec<&ColumnInfo> = columns.iter().filter(|c| c.primary_key).collect();
+        if pk.is_empty() {
+            return Err(Error::other(format!(
+                "{schema}.{table} has no primary key, so a single row cannot be identified"
+            )));
+        }
+
+        let mut tx = conn.begin().await?;
+        let mut deleted = 0u64;
+
+        for keys in rows {
+            let named: Vec<&str> = keys.iter().map(|(name, _)| name.as_str()).collect();
+            if named.len() != pk.len() || !pk.iter().all(|c| named.contains(&c.name.as_str())) {
+                tx.rollback().await?;
+                return Err(Error::other(format!(
+                    "row identity must be the primary key of {schema}.{table}"
+                )));
+            }
+
+            let typed_keys: Vec<(String, String)> = keys
+                .iter()
+                .map(|(name, _)| {
+                    let info = pk.iter().find(|c| &c.name == name).expect("checked above");
+                    (name.clone(), info.data_type.clone())
+                })
+                .collect();
+
+            let sql = build_delete(schema, table, &typed_keys);
+            let mut q = sqlx::query(&sql);
+            for (_, v) in keys {
+                q = q.bind(v);
+            }
+            let affected = q.execute(&mut *tx).await?.rows_affected();
+
+            if affected != 1 {
+                tx.rollback().await?;
+                return Err(Error::other(if affected == 0 {
+                    "no row matched; it may have been changed or deleted since it was read"
+                        .to_string()
+                } else {
+                    format!("{affected} rows matched one identity; refusing to delete")
+                }));
+            }
+            deleted += affected;
+        }
+
+        tx.commit().await?;
+        Ok(deleted)
     }
 
     // -----------------------------------------------------------------------

@@ -11,7 +11,7 @@ import {
 import { asDbError } from "@/lib/utils/errors";
 import { loadPinnedTabs, savePinnedTabs } from "@/lib/pinnedTabs";
 import { applyTranslucency, loadTranslucency, saveTranslucency } from "@/lib/translucency";
-import { isServerOnly } from "@/lib/utils/connections";
+import { isServerOnly, siblingSessions } from "@/lib/utils/connections";
 import { isKeyspaceDriver } from "@/lib/constants/connection";
 import {
   formatTtl,
@@ -21,22 +21,42 @@ import {
   parseTtl,
   stagedKeysIn,
 } from "@/lib/utils/redis";
-import { cellEditableReason, hasRows, isKeyspace, tabColumns } from "@/lib/utils/tabs";
-import { rowKeysFor } from "@/lib/utils/rowKeys";
+import {
+  cellEditableReason,
+  hasRows,
+  isKeyspace,
+  isQueue,
+  rowsDeletable,
+  tabColumns,
+} from "@/lib/utils/tabs";
+import {
+  DEFAULT_PREFIX,
+  EVENT_MEMORY,
+  EVENT_PAGE,
+  QUEUE_LIMIT,
+  RETRYABLE_STATES,
+} from "@/lib/constants/bullmq";
+import { edgeRates, jobsToResult, retryOutcome, stagedJobsIn } from "@/lib/utils/bullmq";
+import { rowKeysFor, rowStageKey, stagedRowsIn } from "@/lib/utils/rowKeys";
 import { rangeBetween, toggle as toggleKey } from "@/lib/utils/selection";
 import { pagedSql, unpageableReason } from "@/lib/utils/statement";
 import type {
   ConnectionConfig,
   ConnectionInfo,
+  DbError,
   DbObject,
   Filter,
   FunctionEntry,
   PaletteMode,
+  QueueEntry,
   QueryTab,
   SchemaEntry,
   Sort,
   TableEntry,
 } from "@/lib/types";
+
+/** Which half of a split the tab is in. One pane is `main` and nothing else. */
+export type PaneId = "main" | "split";
 
 let tabSeq = 0;
 function newTab(connectionId: string | null, object: DbObject | null = null): QueryTab {
@@ -54,16 +74,44 @@ function newTab(connectionId: string | null, object: DbObject | null = null): Qu
     cursors: [],
     scan: null,
     staged: [],
+    selectedRows: [],
     paged: false,
     pageNote: null,
     sort: null,
     filters: [],
     rowCount: null,
     view:
-      object?.kind === "diagram" ? "diagram" : hasRows(object) ? "data" : "definition",
+      object?.kind === "diagram"
+        ? "diagram"
+        : // A queue has rows — its jobs — but `hasRows` is false for it, because
+          // that flag gates the machinery that assumes a relation. The view it
+          // shows is still the data one, and `viewsFor` offers only that.
+          hasRows(object) || object?.kind === "queue"
+          ? "data"
+          : "definition",
     columns: null,
     indexes: null,
     graph: null,
+    queue:
+      object?.kind === "queue"
+        ? {
+            prefix: DEFAULT_PREFIX,
+            counts: {},
+            paused: false,
+            legacyPaused: 0,
+            state: null,
+            jobs: [],
+            order: "recent-first",
+            total: 0,
+            readAtEventId: "",
+            // Null, not an empty map: nothing has been measured yet, and an
+            // empty map would draw every edge as idle before the first poll.
+            rates: null,
+            lastEventId: "",
+            events: [],
+            live: true,
+          }
+        : null,
     selection: null,
     definition: null,
     sql: hasRows(object)
@@ -89,6 +137,15 @@ interface AppState {
 
   /** Databases on each connection's server, keyed by connection id. */
   databases: Record<string, string[]>;
+  /**
+   * BullMQ queues found on each connection, keyed by connection id.
+   *
+   * Beside `databases` rather than inside it: a queue is not a database, and
+   * one Redis database holds all of an application's queues at once.
+   */
+  queues: Record<string, QueueEntry[]>;
+  /** What the last discovery walk cost, so the sidebar can state it. */
+  queueScan: Record<string, { scanned: number; exhausted: boolean }>;
   schemas: Record<string, SchemaEntry[]>;
   tables: Record<string, TableEntry[]>;
   functions: Record<string, FunctionEntry[]>;
@@ -96,6 +153,16 @@ interface AppState {
 
   tabs: QueryTab[];
   activeTabId: string | null;
+  /**
+   * The tab in the second pane, or null for one pane.
+   *
+   * A second id rather than a list of panes: two is what a screen this wide
+   * holds, and everything that reads "the tab" — the status bar, every
+   * command — needs one answer, which `focusedPane` gives it.
+   */
+  splitTabId: string | null;
+  /** Which of the two the keyboard is talking to. */
+  focusedPane: PaneId;
 
   sidebarVisible: boolean;
   /**
@@ -171,6 +238,16 @@ interface AppState {
    */
   busy: Record<string, string>;
   toast: { kind: "error" | "info"; text: string } | null;
+  /**
+   * A refusal that has to be read rather than glimpsed.
+   *
+   * A toast is right for "deleted 3 rows" and wrong for a foreign key
+   * violation: that one arrives with a detail line naming the referencing table
+   * and the row that holds the reference, which is the whole of what the user
+   * needs and far too much to fit in a corner that fades after six seconds.
+   * Errors that end a write the user explicitly confirmed go here instead.
+   */
+  errorDialog: { title: string; error: DbError } | null;
 
   /**
    * Which sidebar objects are picked, and where a range measures from.
@@ -200,6 +277,9 @@ interface AppState {
 
   setActiveConnection: (id: string) => void;
   loadDatabases: (connectionId: string) => Promise<void>;
+  /** Walks for BullMQ queues. Only when the user opens the section: matching
+   *  `<prefix>:*:meta` across a large keyspace is a real cost. */
+  loadQueues: (connectionId: string, reload?: boolean) => Promise<void>;
   openDatabase: (fromConnectionId: string, name: string) => Promise<void>;
   toggleSchema: (connectionId: string, schema: string) => Promise<void>;
   loadAllTables: (connectionId: string) => Promise<void>;
@@ -208,8 +288,12 @@ interface AppState {
   truncateTable: (connectionId: string, schema: string, name: string) => Promise<void>;
 
   openTab: (connectionId?: string | null) => void;
-  openObjectTab: (connectionId: string, object: DbObject) => void;
+  openObjectTab: (connectionId: string, object: DbObject, pane?: PaneId) => void;
   closeTab: (id: string) => void;
+  /** Puts an existing tab in the second pane. */
+  openInSplit: (id: string) => void;
+  closeSplit: () => void;
+  focusPane: (pane: PaneId) => void;
   /** Closes every tab except this one and the pinned ones. */
   closeOtherTabs: (id: string) => void;
   togglePinTab: (id: string) => void;
@@ -229,10 +313,37 @@ interface AppState {
   /** Walks a keyspace page. `delta` of 0 re-reads, 1 is Next, -1 is Prev. */
   goKeyPage: (tabId: string, delta: -1 | 0 | 1) => Promise<void>;
   /** Marks or unmarks a key for deletion. The mark is the confirmation. */
+  /** Picks whole rows out of the grid, by the identity `staged` also uses. */
+  pickRows: (tabId: string, keys: string[]) => void;
+  toggleRowPick: (tabId: string, key: string) => void;
+  clearRowPicks: (tabId: string) => void;
+  /** Marks every picked row, or the one given when nothing is picked. */
+  stageRows: (tabId: string, fallback: string | null) => void;
   toggleStaged: (tabId: string, key: string) => void;
   clearStaged: (tabId: string) => void;
   /** Runs the staged deletion and drops the rows without moving the cursor. */
   commitStaged: (tabId: string) => Promise<void>;
+
+  /** Opens one state's jobs under the diagram, or closes them with `null`. */
+  selectQueueState: (tabId: string, state: string | null) => Promise<void>;
+  /** Pages the open state's jobs. `delta` of 0 re-reads. */
+  goJobPage: (tabId: string, delta: -1 | 0 | 1) => Promise<void>;
+  setQueueLive: (tabId: string, live: boolean) => void;
+  /** One poll: the counts, and whatever the event stream recorded since the
+   *  last one. Cheap enough to run every second, which is the point. */
+  pollQueue: (tabId: string) => Promise<void>;
+  /**
+   * What ⌘R and the refresh control do: the counts *and* the rows.
+   *
+   * Separate from `pollQueue` because it is asked for rather than automatic,
+   * and therefore has to be visible. A poll running every second may not touch
+   * the busy indicator — it would flash once a second forever — but a refresh
+   * nobody can see is a key that appears not to work.
+   */
+  refreshQueue: (tabId: string) => Promise<void>;
+  /** Retries every staged job. `reset` clears `attemptsMade` as well, which is
+   *  the difference between one more attempt and the whole allowance back. */
+  commitRetry: (tabId: string, reset: boolean) => Promise<void>;
   ensureColumns: (tabId: string) => Promise<void>;
   setTabView: (tabId: string, view: QueryTab["view"]) => Promise<void>;
   /** Fetches a diagram tab's schema graph. No-op on any other kind of tab. */
@@ -266,6 +377,7 @@ interface AppState {
   setExportTarget: (target: AppState["exportTarget"]) => void;
 
   setToast: (toast: AppState["toast"]) => void;
+  setErrorDialog: (dialog: AppState["errorDialog"]) => void;
 }
 
 const tableKey = (connectionId: string, schema: string) => `${connectionId}::${schema}`;
@@ -285,6 +397,9 @@ export const busyKey = {
   tables: (connectionId: string) => `tables:${connectionId}`,
   databases: (connectionId: string) => `databases:${connectionId}`,
   keys: (tabId: string) => `keys:${tabId}`,
+  queues: (connectionId: string) => `queues:${connectionId}`,
+  jobs: (tabId: string) => `jobs:${tabId}`,
+  queue: (tabId: string) => `queue:${tabId}`,
 };
 
 /**
@@ -299,6 +414,82 @@ const forgetting = <T,>(map: Record<string, T>, gone: Set<string>): Record<strin
 export const useApp = create<AppState>((set, get) => {
   const patchTab = (id: string, p: Partial<QueryTab>) =>
     set((s) => ({ tabs: s.tabs.map((t) => (t.id === id ? { ...t, ...p } : t)) }));
+
+  /**
+   * Rewrites part of a queue tab's view, leaving the rest of the tab alone.
+   *
+   * A no-op on a tab that has no queue, which is what makes it safe to call
+   * from a poll that was in flight while the user closed the tab or opened a
+   * different one.
+   */
+  const patchQueue = (id: string, p: Partial<NonNullable<QueryTab["queue"]>>) =>
+    set((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.id === id && t.queue ? { ...t, queue: { ...t.queue, ...p } } : t,
+      ),
+    }));
+
+  /**
+   * Puts a tab in a pane and gives that pane the keyboard.
+   *
+   * Every route to a tab goes through here, so the two rules that make a split
+   * legible are stated once: a tab is never in both panes at the same time, and
+   * asking for a tab the other pane is already showing focuses that pane rather
+   * than dragging the tab across and leaving a hole where it was.
+   */
+  const showTab = (id: string, pane: PaneId = "main") =>
+    set((s) => {
+      if (pane === "main") {
+        if (s.splitTabId === id) return { focusedPane: "split" as PaneId };
+        return { activeTabId: id, focusedPane: "main" as PaneId };
+      }
+      const rest = s.tabs.filter((t) => t.id !== id && t.connectionId === s.activeConnectionId);
+      return {
+        splitTabId: id,
+        focusedPane: "split" as PaneId,
+        activeTabId:
+          s.activeTabId === id ? (rest[rest.length - 1]?.id ?? null) : s.activeTabId,
+      };
+    });
+
+  /**
+   * Makes one connection the one the workspace is pointed at.
+   *
+   * Three things have to move together, which is why they are here and not
+   * spread over the callers. The sidebar's target changes; the tab strip shows
+   * this connection's tabs, so the tab in the pane has to be one of them; and
+   * every other database open on the same server is closed, because two live
+   * databases under one server is the state where a query lands somewhere the
+   * user stopped looking at.
+   *
+   * Tabs are kept, not closed. A connection's tabs come back with it, so
+   * switching away and back is free and nothing unsaved is lost.
+   */
+  const focusConnection = async (id: string) => {
+    set((s) => {
+      const mine = s.tabs.filter((t) => t.connectionId === id);
+      // The split holds a tab of the connection being left, so it goes with it.
+      // It comes back the same way everything else does: by opening it again.
+      const split = mine.some((t) => t.id === s.splitTabId) ? s.splitTabId : null;
+      return {
+        activeConnectionId: id,
+        // The last one is the most recently opened, which is where the user
+        // was. No tabs means the empty state, not someone else's tab.
+        activeTabId: mine.some((t) => t.id === s.activeTabId)
+          ? s.activeTabId
+          : (mine.filter((t) => t.id !== split).at(-1)?.id ?? null),
+        splitTabId: split,
+        focusedPane: split && s.focusedPane === "split" ? "split" : "main",
+      };
+    });
+
+    // Last, and one at a time: closing before the switch would leave the
+    // sidebar briefly pointed at a session that is already gone.
+    const { connections, open } = get();
+    for (const gone of siblingSessions(connections, Object.keys(open), id)) {
+      await get().disconnect(gone);
+    }
+  };
 
   /**
    * Runs `fn` with `key` on the record of what the app is waiting for.
@@ -378,7 +569,7 @@ export const useApp = create<AppState>((set, get) => {
             : [0];
     const from = cursors[cursors.length - 1] ?? 0;
 
-    patchTab(id, { running: true, error: null, staged: [], selection: null });
+    patchTab(id, { running: true, error: null, staged: [], selectedRows: [], selection: null });
     const started = performance.now();
     try {
       const page = await ipc.listKeys(
@@ -431,6 +622,16 @@ export const useApp = create<AppState>((set, get) => {
       return;
     }
 
+    // A queue's rows are a page of one state, not of a relation. Falling
+    // through would send it to `runTablePage`, which would generate a `select`
+    // against a table named after the queue and fail against a Redis session
+    // with an error about SQL.
+    if (isQueue(before.object)) {
+      patchTab(id, { page });
+      await get().goJobPage(id, 0);
+      return;
+    }
+
     if (before.object) {
       await runTablePage(id, { page });
     } else {
@@ -455,12 +656,16 @@ export const useApp = create<AppState>((set, get) => {
   open: {},
   activeConnectionId: null,
   databases: {},
+  queues: {},
+  queueScan: {},
   schemas: {},
   tables: {},
   functions: {},
   expandedSchemas: {},
   tabs: [],
   activeTabId: null,
+  splitTabId: null,
+  focusedPane: "main",
   sidebarVisible: true,
   translucent: loadTranslucency(),
   palette: null,
@@ -471,6 +676,7 @@ export const useApp = create<AppState>((set, get) => {
   cellView: null,
   busy: {},
   toast: null,
+  errorDialog: null,
   selection: { connectionId: null, keys: [], anchor: null },
   exportTarget: null,
 
@@ -494,25 +700,34 @@ export const useApp = create<AppState>((set, get) => {
         set((s) => ({
           open: { ...s.open, [config.id]: info },
           schemas: { ...s.schemas, [config.id]: schemas },
-          activeConnectionId: config.id,
           toast: null,
         }));
+        // After the session exists, so a connect that failed closes nothing.
+        await focusConnection(config.id);
 
         // Pinned tabs belong to a connection, so they come back when it does —
         // not at launch, when there is no session to run them against.
-        for (const p of loadPinnedTabs()) {
-          if (p.connectionId !== config.id) continue;
-          if (p.object) {
-            get().openObjectTab(config.id, p.object);
-          } else {
-            get().openTab(config.id);
-            // Restored, not re-run: opening the app should not fire off whatever
-            // statement was in the tab when it was last closed.
+        //
+        // Skipped when the connection still has tabs, which is every reconnect:
+        // switching database closes the sibling session and leaves its tabs
+        // standing, and restoring on top of them would stack a second copy of
+        // every pinned query tab — `openTab` always pushes, and only
+        // `openObjectTab` knows how to find the one that is already there.
+        if (!get().tabs.some((t) => t.connectionId === config.id)) {
+          for (const p of loadPinnedTabs()) {
+            if (p.connectionId !== config.id) continue;
+            if (p.object) {
+              get().openObjectTab(config.id, p.object);
+            } else {
+              get().openTab(config.id);
+              // Restored, not re-run: opening the app should not fire off whatever
+              // statement was in the tab when it was last closed.
+              const id = get().activeTabId;
+              if (id) get().setTabSql(id, p.sql);
+            }
             const id = get().activeTabId;
-            if (id) get().setTabSql(id, p.sql);
+            if (id) patchTab(id, { pinned: true });
           }
-          const id = get().activeTabId;
-          if (id) patchTab(id, { pinned: true });
         }
 
         // A freshly opened connection with no tab is a dead end. Give it one,
@@ -627,7 +842,14 @@ export const useApp = create<AppState>((set, get) => {
     });
   },
 
-  setActiveConnection: (id) => set({ activeConnectionId: id }),
+  setActiveConnection: (id) => {
+    void focusConnection(id);
+    // Same reasoning as `connect`: a connection with no tab is a dead end, and
+    // the empty state reads "open a connection from the sidebar" to someone who
+    // just did. `focusConnection` has already written the active id — it only
+    // awaits to close what it replaced.
+    if (!get().tabs.some((t) => t.connectionId === id)) get().openTab(id);
+  },
 
   /**
    * Databases on this connection's server. Fetched once per connection: the
@@ -640,6 +862,32 @@ export const useApp = create<AppState>((set, get) => {
       try {
         const names = await ipc.listDatabases(connectionId);
         set((s) => ({ databases: { ...s.databases, [connectionId]: names } }));
+      } catch (e) {
+        set({ toast: { kind: "error", text: asDbError(e).message } });
+      }
+    });
+  },
+
+  /**
+   * Walks for BullMQ queues on a connection.
+   *
+   * Only when the user opens the section, never on connect. Finding queues
+   * means matching `<prefix>:*:meta` across the keyspace, and on an instance
+   * holding millions of session keys that is a walk worth asking for rather
+   * than one to spend on every connection the moment it opens.
+   */
+  loadQueues: async (connectionId, reload = false) => {
+    if (!reload && get().queues[connectionId]) return;
+    await track(busyKey.queues(connectionId), "Finding queues…", async () => {
+      try {
+        const page = await ipc.listQueues(connectionId, DEFAULT_PREFIX, 0, QUEUE_LIMIT);
+        set((s) => ({
+          queues: { ...s.queues, [connectionId]: page.queues },
+          queueScan: {
+            ...s.queueScan,
+            [connectionId]: { scanned: page.scanned, exhausted: page.exhausted },
+          },
+        }));
       } catch (e) {
         set({ toast: { kind: "error", text: asDbError(e).message } });
       }
@@ -726,7 +974,17 @@ export const useApp = create<AppState>((set, get) => {
         set((s) => ({
           tables: { ...s.tables, [key]: tables },
           functions: { ...s.functions, [key]: functions },
-          expandedSchemas: { ...s.expandedSchemas, [key]: true },
+          // One schema unfolded at a time, per connection. The lists stay in
+          // `tables` and `functions`, so folding one and opening it again later
+          // costs nothing — what is dropped is the disclosure, not the cache.
+          expandedSchemas: {
+            ...Object.fromEntries(
+              Object.entries(s.expandedSchemas).filter(
+                ([k]) => !k.startsWith(`${connectionId}::`),
+              ),
+            ),
+            [key]: true,
+          },
         }));
       } catch (e) {
         set({ toast: { kind: "error", text: asDbError(e).message } });
@@ -811,10 +1069,11 @@ export const useApp = create<AppState>((set, get) => {
 
   openTab: (connectionId) => {
     const tab = newTab(connectionId ?? get().activeConnectionId);
-    set((s) => ({ tabs: [...s.tabs, tab], activeTabId: tab.id }));
+    set((s) => ({ tabs: [...s.tabs, tab] }));
+    showTab(tab.id);
   },
 
-  openObjectTab: (connectionId, object) => {
+  openObjectTab: (connectionId, object, pane = "main") => {
     const existing = get().tabs.find(
       (t) =>
         t.connectionId === connectionId &&
@@ -825,7 +1084,7 @@ export const useApp = create<AppState>((set, get) => {
     // Reopening an object should return to the tab you already have rather
     // than stacking a second copy of the same thing.
     if (existing) {
-      set({ activeTabId: existing.id });
+      showTab(existing.id, pane);
       // Both are idempotent, and each is a no-op on the kind of tab it does
       // not describe. A reopened tab whose first fetch failed is the case
       // that matters: it gets another attempt rather than staying blank.
@@ -838,10 +1097,14 @@ export const useApp = create<AppState>((set, get) => {
       if (isKeyspace(object) && existing.results.length === 0) {
         void get().goKeyPage(existing.id, 0);
       }
+      // Idempotent, and the counts on a tab that has been in the background are
+      // whatever they were when it was last looked at.
+      if (isQueue(object)) void get().pollQueue(existing.id);
       return;
     }
     const tab = newTab(connectionId, object);
-    set((s) => ({ tabs: [...s.tabs, tab], activeTabId: tab.id }));
+    set((s) => ({ tabs: [...s.tabs, tab] }));
+    showTab(tab.id, pane);
 
     // A diagram is the schema, not a relation in it: there is no page of rows
     // to fetch and no definition to read, only the graph it draws.
@@ -855,6 +1118,14 @@ export const useApp = create<AppState>((set, get) => {
     // back the exact total.
     if (object.kind === "keyspace") {
       void get().goKeyPage(tab.id, 0);
+      return;
+    }
+
+    // A queue is polled rather than queried: there is no statement to generate
+    // and no state chosen yet, only the lifecycle and what is moving through
+    // it. The jobs arrive when a node on the diagram is clicked.
+    if (object.kind === "queue") {
+      void get().pollQueue(tab.id);
       return;
     }
     if (!hasRows(object)) {
@@ -926,24 +1197,45 @@ export const useApp = create<AppState>((set, get) => {
 
   closeTab: (id) => {
     set((s) => {
-      const index = s.tabs.findIndex((t) => t.id === id);
+      const closing = s.tabs.find((t) => t.id === id);
       const tabs = s.tabs.filter((t) => t.id !== id);
+      // Closing the tab in the second pane is how the split is closed. There is
+      // no separate control for it, because the tab is the thing the split was
+      // opened to hold.
+      if (s.splitTabId === id) {
+        return { tabs, splitTabId: null, focusedPane: "main" as PaneId };
+      }
       if (s.activeTabId !== id) return { tabs };
+      // Among the tabs of the same connection, which is what the strip shows.
+      // The neighbour on a hidden tab is not a neighbour on screen.
+      const mine = tabs.filter((t) => t.connectionId === (closing?.connectionId ?? null));
+      const index = s.tabs
+        .filter((t) => t.connectionId === (closing?.connectionId ?? null))
+        .findIndex((t) => t.id === id);
       // Focus the neighbour, preferring the one on the left, which is where
       // the eye already is after closing.
-      const next = tabs[Math.max(0, index - 1)];
-      return { tabs, activeTabId: next?.id ?? null };
+      const next = mine.filter((t) => t.id !== s.splitTabId)[Math.max(0, index - 1)];
+      return { tabs, activeTabId: next?.id ?? null, focusedPane: "main" as PaneId };
     });
     // Closing a pinned tab is how a pin is dropped: the next session should
     // not reopen something the user just shut.
     savePinnedTabs(get().tabs);
   },
 
+  openInSplit: (id) => showTab(id, "split"),
+
+  closeSplit: () => set({ splitTabId: null, focusedPane: "main" }),
+
+  focusPane: (pane) =>
+    set((s) => ({ focusedPane: pane === "split" && !s.splitTabId ? "main" : pane })),
+
   closeOtherTabs: (id) => {
     set((s) => ({
       // Pinned is a statement about which tabs survive a clear-out, so this is
-      // the one place it has to be honoured.
-      tabs: s.tabs.filter((t) => t.id === id || t.pinned),
+      // the one place it has to be honoured. The tab in the other pane survives
+      // too: it is on screen, and closing what the user is looking at is not
+      // what "close other tabs" means.
+      tabs: s.tabs.filter((t) => t.id === id || t.pinned || t.id === s.splitTabId),
       activeTabId: id,
     }));
   },
@@ -953,14 +1245,25 @@ export const useApp = create<AppState>((set, get) => {
     savePinnedTabs(get().tabs);
   },
 
-  setActiveTab: (id) => set({ activeTabId: id }),
+  setActiveTab: (id) => {
+    // The sidebar, the palette and the editor's autocomplete all read
+    // `activeConnectionId`. A tab is the other way into a connection, so
+    // focusing one has to move that too or those three describe a connection
+    // the pane is not on.
+    const tab = get().tabs.find((t) => t.id === id);
+    if (tab?.connectionId) set({ activeConnectionId: tab.connectionId });
+    showTab(id);
+  },
 
   cycleTab: (delta) => {
-    const { tabs, activeTabId } = get();
-    if (tabs.length === 0) return;
-    const i = tabs.findIndex((t) => t.id === activeTabId);
-    const next = tabs[(((i + delta) % tabs.length) + tabs.length) % tabs.length];
-    if (next) set({ activeTabId: next.id });
+    const { tabs, activeTabId, activeConnectionId } = get();
+    // The strip only draws this connection's tabs, so this is what "next tab"
+    // means. Cycling into a hidden one would look like the tab vanishing.
+    const mine = tabs.filter((t) => t.connectionId === activeConnectionId);
+    if (mine.length === 0) return;
+    const i = mine.findIndex((t) => t.id === activeTabId);
+    const next = mine[(((i + delta) % mine.length) + mine.length) % mine.length];
+    if (next) showTab(next.id);
   },
 
   // Editing the statement invalidates where you were in its results: page 3 of
@@ -990,6 +1293,12 @@ export const useApp = create<AppState>((set, get) => {
     // again", which is the same thing it means everywhere else.
     if (isKeyspace(tab.object)) {
       await get().goKeyPage(tabId, 0);
+      return;
+    }
+    // Same on a queue: there is no statement, so ⌘R means "read this again" —
+    // the counts, the events, and the open state's jobs if one is open.
+    if (isQueue(tab.object)) {
+      await get().refreshQueue(tabId);
       return;
     }
     const sql = (sqlOverride ?? tab.sql).trim();
@@ -1145,6 +1454,43 @@ export const useApp = create<AppState>((set, get) => {
    * the row goes red and the status bar prints the command, which is this
    * app's existing answer to "show a generated write before it runs".
    */
+  pickRows: (tabId, keys) => patchTab(tabId, { selectedRows: keys }),
+
+  toggleRowPick: (tabId, key) =>
+    set((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.id === tabId ? { ...t, selectedRows: toggleKey(t.selectedRows, key) } : t,
+      ),
+    })),
+
+  clearRowPicks: (tabId) => patchTab(tabId, { selectedRows: [] }),
+
+  /**
+   * Turns the picked rows into staged ones, which is the whole of "bulk
+   * delete": one row or forty is the same gesture, and what differs is only how
+   * many were picked before Delete was pressed.
+   *
+   * With nothing picked it falls back to the row under the cursor, so the
+   * single-row flow is unchanged. Marking is not a toggle here — a Delete on a
+   * selection means "these go", and unmarking half of them by pressing it twice
+   * is not something anyone means.
+   */
+  stageRows: (tabId, fallback) =>
+    set((s) => ({
+      tabs: s.tabs.map((t) => {
+        if (t.id !== tabId) return t;
+        const picked = t.selectedRows.length > 0 ? t.selectedRows : fallback ? [fallback] : [];
+        if (picked.length === 0) return t;
+        // A single row keeps toggling, because that is how one is unmarked.
+        if (t.selectedRows.length === 0 && fallback) {
+          return { ...t, staged: toggleKey(t.staged, fallback) };
+        }
+        const staged = [...t.staged];
+        for (const key of picked) if (!staged.includes(key)) staged.push(key);
+        return { ...t, staged, selectedRows: [] };
+      }),
+    })),
+
   toggleStaged: (tabId, key) =>
     set((s) => ({
       tabs: s.tabs.map((t) =>
@@ -1162,7 +1508,12 @@ export const useApp = create<AppState>((set, get) => {
   clearStaged: (tabId) => patchTab(tabId, { staged: [] }),
 
   /**
-   * Deletes every staged key.
+   * Deletes every staged key, or on a table tab, every staged row.
+   *
+   * One action for both because it is one gesture: mark, read back what is
+   * about to go, press ⌘S. What differs is only what a mark names — a key in a
+   * flat namespace, or a row by its primary key — and that is decided here
+   * rather than by a second command bound to the same key.
    *
    * The rows are dropped from the result in place rather than by re-reading the
    * page. A re-read would move the scan cursor, so the keys around the ones just
@@ -1174,6 +1525,64 @@ export const useApp = create<AppState>((set, get) => {
     if (!tab?.connectionId || tab.staged.length === 0) return;
     const result = tab.results[tab.activeResultIndex];
     if (!result) return;
+
+    const object = tab.object;
+    if (object && rowsDeletable(tab)) {
+      // Same rule as below: only what is on screen. `stagedRowsIn` reads the
+      // identity off the rows themselves, so a row that has since scrolled out
+      // of the result cannot be reached.
+      const rows = stagedRowsIn(tab.columns, result, new Set(tab.staged));
+      if (rows.length === 0) {
+        patchTab(tabId, { staged: [] });
+        return;
+      }
+
+      try {
+        const removed = await ipc.deleteRows(
+          tab.connectionId,
+          object.schema,
+          object.name,
+          rows,
+        );
+        const gone = new Set(tab.staged);
+        set((s) => ({
+          tabs: s.tabs.map((t) =>
+            t.id !== tabId
+              ? t
+              : {
+                  ...t,
+                  staged: [],
+                  selectedRows: [],
+                  selection: null,
+                  results: t.results.map((r, i) =>
+                    i !== t.activeResultIndex
+                      ? r
+                      : {
+                          ...r,
+                          rows: r.rows.filter((_, ri) => {
+                            const identity = rowKeysFor(t.columns, r, ri);
+                            return !identity.ok || !gone.has(rowStageKey(identity.keys));
+                          }),
+                        },
+                  ),
+                  rowCount: t.rowCount
+                    ? { ...t.rowCount, value: Math.max(0, t.rowCount.value - removed) }
+                    : null,
+                },
+          ),
+          toast: {
+            kind: "info",
+            text: `Deleted ${removed} ${removed === 1 ? "row" : "rows"}.`,
+          },
+        }));
+      } catch (e) {
+        // The marks stay. A delete that Postgres refused is one the user may
+        // want to retry after clearing the reference, and dropping the red rows
+        // would make them mark every one of them again to do it.
+        set({ errorDialog: { title: "Rows not deleted", error: asDbError(e) } });
+      }
+      return;
+    }
 
     // Only what is actually on screen. A key staged before a page turn is one
     // the user can no longer see, and acting on it would be the app destroying
@@ -1194,6 +1603,7 @@ export const useApp = create<AppState>((set, get) => {
             : {
                 ...t,
                 staged: [],
+                selectedRows: [],
                 selection: null,
                 results: t.results.map((r, i) =>
                   i !== t.activeResultIndex
@@ -1210,6 +1620,193 @@ export const useApp = create<AppState>((set, get) => {
           text: `Deleted ${removed} ${removed === 1 ? "key" : "keys"}.`,
         },
       }));
+    } catch (e) {
+      set({ toast: { kind: "error", text: asDbError(e).message } });
+    }
+  },
+
+  selectQueueState: async (tabId, state) => {
+    const tab = get().tabs.find((t) => t.id === tabId);
+    if (!tab?.queue) return;
+
+    // Closing drops the rows as well as the selection. Leaving them behind
+    // would put a page of `failed` jobs under a diagram with nothing selected,
+    // which reads as the state still being open.
+    if (state === null) {
+      patchQueue(tabId, { state: null, jobs: [], total: 0 });
+      patchTab(tabId, { results: [], staged: [], selectedRows: [], selection: null });
+      return;
+    }
+
+    patchQueue(tabId, { state });
+    // Marks do not survive the move. A job staged in `failed` means nothing in
+    // `completed`, and committing one the user can no longer see would be the
+    // app acting on something it stopped showing them.
+    patchTab(tabId, { page: { ...tab.page, offset: 0 }, staged: [], selectedRows: [], selection: null });
+    await get().goJobPage(tabId, 0);
+  },
+
+  goJobPage: async (tabId, delta) => {
+    const tab = get().tabs.find((t) => t.id === tabId);
+    const queue = tab?.queue;
+    if (!tab?.connectionId || !queue?.state || !tab.object) return;
+
+    const { limit } = tab.page;
+    const offset = Math.max(0, tab.page.offset + delta * limit);
+
+    patchTab(tabId, { running: true, error: null, staged: [], selectedRows: [], selection: null });
+    const started = performance.now();
+    try {
+      const page = await ipc.listJobs(
+        tab.connectionId,
+        queue.prefix,
+        tab.object.name,
+        queue.state,
+        offset,
+        limit,
+      );
+      const clientMs = Math.round(performance.now() - started);
+      patchTab(tabId, {
+        results: [jobsToResult(page, clientMs)],
+        activeResultIndex: 0,
+        running: false,
+        clientMs,
+        page: { limit, offset },
+      });
+      // Read after the fetch, not before: a poll that landed while the page was
+      // in flight has already accounted for itself, and taking the earlier id
+      // would report those events as changes this page does not include.
+      patchQueue(tabId, {
+        jobs: page.jobs,
+        order: page.order,
+        total: page.total,
+        readAtEventId: get().tabs.find((t) => t.id === tabId)?.queue?.lastEventId ?? "",
+      });
+    } catch (e) {
+      patchTab(tabId, {
+        running: false,
+        error: asDbError(e),
+        clientMs: Math.round(performance.now() - started),
+      });
+    }
+  },
+
+  setQueueLive: (tabId, live) => patchQueue(tabId, { live }),
+
+  /**
+   * One poll: the counts, and whatever the stream recorded since the last one.
+   *
+   * Failures are swallowed rather than raised. This runs every second, and a
+   * disconnected server would otherwise produce a toast a second — the tab
+   * simply keeps showing the last thing it knew, which is what a monitor whose
+   * feed dropped should do.
+   */
+  pollQueue: async (tabId) => {
+    const tab = get().tabs.find((t) => t.id === tabId);
+    const queue = tab?.queue;
+    if (!tab?.connectionId || !queue || !tab.object) return;
+
+    const { prefix, lastEventId } = queue;
+    try {
+      const [entry, page] = await Promise.all([
+        ipc.queueCounts(tab.connectionId, prefix, tab.object.name),
+        ipc.queueEvents(
+          tab.connectionId,
+          prefix,
+          tab.object.name,
+          lastEventId || null,
+          EVENT_PAGE,
+        ),
+      ]);
+
+      // Re-read: a poll is a round trip, and the tab may have been closed or
+      // moved to another state while it was in flight.
+      const current = get().tabs.find((t) => t.id === tabId)?.queue;
+      if (!current) return;
+
+      // A trimmed window means transitions happened that this page cannot
+      // account for, so what is held is a gapped history rather than a short
+      // one. Dropped rather than appended to: the next poll starts clean and
+      // rates become measurable again, and until then they are `null` rather
+      // than a number derived from holes.
+      const events = page.trimmed
+        ? page.events
+        : [...current.events, ...page.events].slice(-EVENT_MEMORY);
+
+      // The sidebar holds the same counts, from a walk that may be minutes old.
+      // The queue being watched is the one whose row is worth keeping true;
+      // the rest stay as of the last walk, with a refresh beside the section.
+      set((s) => {
+        const list = s.queues[tab.connectionId!];
+        if (!list?.some((q) => q.name === tab.object!.name)) return {};
+        return {
+          queues: {
+            ...s.queues,
+            [tab.connectionId!]: list.map((q) => (q.name === entry.name ? entry : q)),
+          },
+        };
+      });
+
+      patchQueue(tabId, {
+        counts: entry.counts,
+        paused: entry.paused,
+        legacyPaused: entry.legacyPaused,
+        events,
+        lastEventId: page.lastId || current.lastEventId,
+        rates: page.trimmed ? null : edgeRates(events, page.serverNow),
+      });
+    } catch {
+      /* The tab keeps showing the last thing it knew. */
+    }
+  },
+
+  refreshQueue: async (tabId) => {
+    const tab = get().tabs.find((t) => t.id === tabId);
+    if (!tab?.queue) return;
+    await track(busyKey.queue(tabId), "Refreshing queue…", async () => {
+      await get().pollQueue(tabId);
+      // The counts come back either way; the rows only exist when a state is
+      // open, and refreshing a page that is not on screen is work for nothing.
+      if (get().tabs.find((t) => t.id === tabId)?.queue?.state) {
+        await get().goJobPage(tabId, 0);
+      }
+    });
+  },
+
+  commitRetry: async (tabId, reset) => {
+    const tab = get().tabs.find((t) => t.id === tabId);
+    const queue = tab?.queue;
+    if (!tab?.connectionId || !queue?.state || !tab.object || tab.staged.length === 0) return;
+    if (!RETRYABLE_STATES.includes(queue.state)) return;
+
+    const result = tab.results[tab.activeResultIndex];
+    if (!result) return;
+
+    // Only what is on screen, for the reason `commitStaged` gives: a job staged
+    // before a page turn is one the user can no longer see.
+    const jobIds = stagedJobsIn(result, new Set(tab.staged));
+    if (jobIds.length === 0) {
+      patchTab(tabId, { staged: [] });
+      return;
+    }
+
+    try {
+      const outcomes = await ipc.retryJobs(tab.connectionId, {
+        prefix: queue.prefix,
+        queue: tab.object.name,
+        state: queue.state,
+        jobIds,
+        resetAttemptsMade: reset,
+      });
+      patchTab(tabId, { staged: [], selectedRows: [], selection: null });
+      set({ toast: { kind: "info", text: retryOutcome(outcomes) } });
+
+      // Re-read rather than dropping the rows in place, unlike a deletion:
+      // the jobs did not disappear, they moved to `wait`, and this page is now
+      // one page of a state that has fewer of them. Offset paging is stable
+      // under that, so nothing shifts under the user.
+      await get().goJobPage(tabId, 0);
+      void get().pollQueue(tabId);
     } catch (e) {
       set({ toast: { kind: "error", text: asDbError(e).message } });
     }
@@ -1524,10 +2121,27 @@ export const useApp = create<AppState>((set, get) => {
   setExportTarget: (exportTarget) => set({ exportTarget }),
 
   setToast: (toast) => set({ toast }),
+
+  setErrorDialog: (errorDialog) => set({ errorDialog }),
   };
 });
 
-export const activeTab = (s: AppState) => s.tabs.find((t) => t.id === s.activeTabId) ?? null;
+/**
+ * The tab every command acts on: the one in the focused pane.
+ *
+ * With one pane this is `activeTabId` and nothing has changed. With two, ⌘R has
+ * to run the half the user is looking at, which is the only reason `focusedPane`
+ * exists.
+ */
+export const activeTab = (s: AppState) => {
+  const focused = s.focusedPane === "split" ? s.splitTabId : s.activeTabId;
+  // Falls back rather than answering null: dropping an object or deleting a
+  // connection closes tabs, and a focus left pointing at one of them would
+  // disable every command while a pane on screen still has a tab in it.
+  return (
+    s.tabs.find((t) => t.id === focused) ?? s.tabs.find((t) => t.id === s.activeTabId) ?? null
+  );
+};
 
 /**
  * Shared empty list, so a tab that has nothing staged still answers with the

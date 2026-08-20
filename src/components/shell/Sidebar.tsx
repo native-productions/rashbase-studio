@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { busyKey, useApp } from "@/store/app";
 import type {
   ConnectionConfig,
@@ -16,9 +16,56 @@ import { objectMenuItems, runObjectMenuAction } from "@/components/shell/objectM
 import { KIND_GLYPH, OBJECT_GROUPS, type SidebarMember } from "@/lib/constants/sidebar";
 import { CLUSTER_OBJECTS, CLUSTER_SCHEMA } from "@/lib/constants/cluster";
 import { isKeyspaceDriver } from "@/lib/constants/connection";
+import { DEFAULT_PREFIX } from "@/lib/constants/bullmq";
 import { findEnvironment } from "@/lib/utils/environments";
 import { asDbError } from "@/lib/utils/errors";
 import { isServerOnly, nestConnections } from "@/lib/utils/connections";
+
+/**
+ * How wide the tree is, kept across launches.
+ *
+ * `localStorage` for the same reason as `translucency.ts` and `erdPrefs.ts`:
+ * this is window layout, not data, so it belongs to the window and not to the
+ * connection store on the Rust side.
+ */
+const WIDTH_KEY = "rashbase.sidebarWidth.v1";
+const MIN_WIDTH = 180;
+const MAX_WIDTH = 560;
+const DEFAULT_WIDTH = 240;
+
+function clampWidth(px: number) {
+  return Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, px));
+}
+
+function loadWidth(): number {
+  try {
+    const px = Number(localStorage.getItem(WIDTH_KEY));
+    if (Number.isFinite(px) && px > 0) return clampWidth(px);
+  } catch {
+    /* A disabled store costs the user the preference, nothing more. */
+  }
+  return DEFAULT_WIDTH;
+}
+
+/**
+ * How tall the connection list is. `null` means "as tall as it needs to be",
+ * which is the right answer until the user says otherwise: a two-connection
+ * list should not reserve a pane's worth of empty space.
+ */
+const CONN_HEIGHT_KEY = "rashbase.sidebarConnHeight.v1";
+const MIN_PANE = 72;
+
+function loadConnHeight(): number | null {
+  try {
+    const raw = localStorage.getItem(CONN_HEIGHT_KEY);
+    if (raw === null) return null;
+    const px = Number(raw);
+    if (Number.isFinite(px) && px > 0) return px;
+  } catch {
+    /* A disabled store costs the user the preference, nothing more. */
+  }
+  return null;
+}
 
 /**
  * A row that opens and closes what is under it.
@@ -65,6 +112,149 @@ function DisclosureRow({
       </span>
       <span className={`truncate ${labelClass}`}>{label}</span>
     </button>
+  );
+}
+
+/**
+ * BullMQ queues on a Redis connection.
+ *
+ * Collapsed until asked, and that is the whole reason it is a disclosure rather
+ * than a list: finding queues means matching `<prefix>:*:meta` across the
+ * keyspace, and on an instance holding millions of session keys that is a walk
+ * nobody should pay for by connecting.
+ *
+ * One number per row, chosen rather than totalled. A sidebar row is too narrow
+ * for seven counts and nobody scans seven numbers anyway: what is worth seeing
+ * at this width is whether anything has failed, and failing that, whether
+ * anything is waiting. The rest is one click away on the diagram.
+ */
+function QueuesSection({
+  connectionId,
+  needle,
+  viewedTable,
+}: {
+  connectionId: string;
+  needle: string;
+  viewedTable: string | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const queues = useApp((s) => s.queues[connectionId] ?? null);
+  const scan = useApp((s) => s.queueScan[connectionId] ?? null);
+  const loadQueues = useApp((s) => s.loadQueues);
+  const openObjectTab = useApp((s) => s.openObjectTab);
+  const busy = useApp((s) => !!s.busy[busyKey.queues(connectionId)]);
+
+  const shown = useMemo(
+    () => (queues ?? []).filter((q) => q.name.toLowerCase().includes(needle)),
+    [queues, needle],
+  );
+
+  return (
+    <div className="mt-1 border-t border-line-soft pt-1">
+      <div className="flex items-center">
+        <div className="min-w-0 flex-1">
+          <DisclosureRow
+            label="Queues"
+            open={open}
+            busy={busy}
+            indent="pl-1.5"
+            labelClass="label-eyebrow"
+            onToggle={() => {
+              const next = !open;
+              setOpen(next);
+              // Cached on reopen. The walk is the expensive part and reopening a
+              // section is not a request for a fresh one — the control beside
+              // this is, and the queue being watched keeps its own row true.
+              if (next) void loadQueues(connectionId);
+            }}
+          />
+        </div>
+        {open && (
+          <button
+            onClick={() => void loadQueues(connectionId, true)}
+            disabled={busy}
+            title="Walk for queues again"
+            aria-label="Refresh queues"
+            className="mr-1 shrink-0 rounded px-1 text-[10px] text-ink-faint hover:bg-hover hover:text-ink disabled:pointer-events-none disabled:opacity-40"
+          >
+            <span aria-hidden="true">⟳</span>
+          </button>
+        )}
+      </div>
+
+      {open &&
+        (queues === null ? null : shown.length === 0 ? (
+          <p className="py-1.5 pl-4 text-[11px] text-ink-faint">
+            {needle ? (
+              "No match"
+            ) : (
+              <>
+                {/* What was looked for, where, and what the look cost. An
+                    empty state that only said "none" would leave a wrong
+                    prefix indistinguishable from an idle server. */}
+                No queues under prefix{" "}
+                <span className="font-mono text-ink-muted">{DEFAULT_PREFIX}</span>
+                {scan && <> · scanned {scan.scanned.toLocaleString()}</>}
+              </>
+            )}
+          </p>
+        ) : (
+          <>
+            {shown.map((q) => {
+              const failed = q.counts.failed ?? 0;
+              const pending =
+                (q.counts.wait ?? 0) +
+                (q.counts.active ?? 0) +
+                (q.counts.delayed ?? 0) +
+                (q.counts.prioritized ?? 0);
+              const viewing = `${connectionId}::${q.name}.${q.name}` === viewedTable;
+
+              return (
+                <button
+                  key={q.name}
+                  onClick={() =>
+                    openObjectTab(connectionId, {
+                      schema: q.name,
+                      name: q.name,
+                      kind: "queue",
+                    })
+                  }
+                  className={[
+                    "flex w-full items-center gap-2 rounded py-1 pr-1.5 pl-4 text-left text-[12px]",
+                    viewing ? "bg-accent-wash text-ink" : "text-ink-muted hover:bg-hover hover:text-ink",
+                  ].join(" ")}
+                >
+                  <span className="truncate font-mono">{q.name}</span>
+                  {q.paused && (
+                    <span className="shrink-0 text-[10px] text-ink-faint">paused</span>
+                  )}
+                  <span
+                    className={[
+                      "ml-auto shrink-0 font-mono text-[10px] tabular-nums",
+                      failed > 0 ? "text-danger" : "text-ink-faint",
+                    ].join(" ")}
+                    title={
+                      failed > 0
+                        ? `${failed} failed`
+                        : `${pending} waiting, active, delayed or prioritized`
+                    }
+                  >
+                    {failed > 0 ? failed.toLocaleString() : pending.toLocaleString()}
+                  </span>
+                </button>
+              );
+            })}
+
+            {/* A bound that was hit is reported as a bound. Without this the
+                list looks like every queue there is. */}
+            {scan && !scan.exhausted && (
+              <p className="py-1 pl-4 text-[10px] text-ink-faint">
+                Stopped after scanning {scan.scanned.toLocaleString()} keys. There may be more.
+              </p>
+            )}
+          </>
+        ))}
+    </div>
   );
 }
 
@@ -180,6 +370,85 @@ export function Sidebar() {
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [deleting, setDeleting] = useState<ConnectionConfig | null>(null);
   const [pending, setPending] = useState<PendingAction | null>(null);
+  const [width, setWidth] = useState(loadWidth);
+  const dragRef = useRef<{ startX: number; startW: number } | null>(null);
+
+  const onResizeMove = useCallback((e: PointerEvent) => {
+    const d = dragRef.current;
+    if (!d) return;
+    setWidth(clampWidth(d.startW + (e.clientX - d.startX)));
+  }, []);
+
+  const onResizeUp = useCallback(() => {
+    dragRef.current = null;
+    window.removeEventListener("pointermove", onResizeMove);
+    window.removeEventListener("pointerup", onResizeUp);
+  }, [onResizeMove]);
+
+  const onResizeDown = useCallback(
+    (e: React.PointerEvent) => {
+      e.preventDefault();
+      dragRef.current = { startX: e.clientX, startW: width };
+      window.addEventListener("pointermove", onResizeMove);
+      window.addEventListener("pointerup", onResizeUp);
+    },
+    [width, onResizeMove, onResizeUp],
+  );
+
+  // Written on every settled width rather than on pointer-up, so a
+  // double-click reset and a drag both persist through the one path.
+  useEffect(() => {
+    try {
+      localStorage.setItem(WIDTH_KEY, String(width));
+    } catch {
+      /* Same: the window is still the right width for this session. */
+    }
+  }, [width]);
+
+  const [connHeight, setConnHeight] = useState<number | null>(loadConnHeight);
+  const asideRef = useRef<HTMLElement>(null);
+  const connRef = useRef<HTMLDivElement>(null);
+  const rowDragRef = useRef<{ startY: number; startH: number } | null>(null);
+
+  const onRowMove = useCallback((e: PointerEvent) => {
+    const d = rowDragRef.current;
+    const aside = asideRef.current;
+    if (!d || !aside) return;
+    // The floor for the schema tree below is the same one the list itself
+    // gets, so neither side can be dragged out of existence.
+    const max = Math.max(MIN_PANE, aside.clientHeight - MIN_PANE);
+    setConnHeight(Math.min(max, Math.max(MIN_PANE, d.startH + (e.clientY - d.startY))));
+  }, []);
+
+  const onRowUp = useCallback(() => {
+    rowDragRef.current = null;
+    window.removeEventListener("pointermove", onRowMove);
+    window.removeEventListener("pointerup", onRowUp);
+  }, [onRowMove]);
+
+  const onRowDown = useCallback(
+    (e: React.PointerEvent) => {
+      e.preventDefault();
+      // Measured rather than read off state: until the first drag the list is
+      // auto-height, and the drag has to start from whatever that came out as.
+      rowDragRef.current = {
+        startY: e.clientY,
+        startH: connRef.current?.clientHeight ?? MIN_PANE,
+      };
+      window.addEventListener("pointermove", onRowMove);
+      window.addEventListener("pointerup", onRowUp);
+    },
+    [onRowMove, onRowUp],
+  );
+
+  useEffect(() => {
+    try {
+      if (connHeight === null) localStorage.removeItem(CONN_HEIGHT_KEY);
+      else localStorage.setItem(CONN_HEIGHT_KEY, String(connHeight));
+    } catch {
+      /* Same: the pane is still the right height for this session. */
+    }
+  }, [connHeight]);
 
   const connections = useApp((s) => s.connections);
   const open = useApp((s) => s.open);
@@ -212,6 +481,7 @@ export function Sidebar() {
 
   const needle = filter.trim().toLowerCase();
   const activeSchemas = activeConnectionId ? (schemas[activeConnectionId] ?? []) : [];
+  const schemaOpen = !!activeConnectionId && !!open[activeConnectionId];
 
   // A connection that named no database is a server, so what it has to show is
   // its databases, not the schema of whichever one Postgres substituted.
@@ -361,7 +631,9 @@ export function Sidebar() {
       }
       anchorSelection(activeConnectionId, key);
     }
-    openObjectTab(activeConnectionId, object);
+    // ⌥ is "beside what I am looking at", the way it opens a second view
+    // everywhere else. Plain click replaces; this one adds.
+    openObjectTab(activeConnectionId, object, e.altKey ? "split" : "main");
   }
 
   /** Right-clicking outside the selection resets it, as a file list does. */
@@ -403,6 +675,11 @@ export function Sidebar() {
       return;
     }
 
+    if (id === "open.split") {
+      openObjectTab(activeConnectionId, target, "split");
+      return;
+    }
+
     if (id === "export") {
       const keys =
         selectedKeys.size > 0 ? [...selectedKeys] : [`${target.schema}.${target.name}`];
@@ -420,7 +697,24 @@ export function Sidebar() {
   }
 
   return (
-    <aside className="flex w-60 shrink-0 flex-col border-r border-line-soft bg-raised">
+    <aside
+      ref={asideRef}
+      style={{ width }}
+      className="relative flex shrink-0 flex-col border-r border-line-soft bg-raised"
+    >
+      {/* Sits on the border itself and is wider than it, so the grab area is
+          reachable without the border having to be thick enough to see. */}
+      <div
+        onPointerDown={onResizeDown}
+        onDoubleClick={() => setWidth(DEFAULT_WIDTH)}
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize sidebar"
+        className="group absolute top-0 -right-1 z-10 h-full w-2 cursor-col-resize"
+      >
+        <div className="h-full w-px translate-x-1 group-hover:bg-accent/40" />
+      </div>
+
       <div className="flex items-center justify-between px-3 pt-3 pb-1.5">
         <span className="label-eyebrow">Connections</span>
         <button
@@ -435,7 +729,12 @@ export function Sidebar() {
         </button>
       </div>
 
-      <div className="px-1.5 pb-1">
+      <div
+        ref={connRef}
+        /* Only worth pinning when there is a second half to make room for. */
+        style={{ height: schemaOpen ? (connHeight ?? undefined) : undefined }}
+        className="shrink-0 overflow-y-auto px-1.5 pb-1"
+      >
         {connections.length === 0 ? (
           <p className="px-1.5 py-2 text-[11px] leading-relaxed text-ink-faint">
             No connections yet.{" "}
@@ -502,9 +801,22 @@ export function Sidebar() {
         )}
       </div>
 
-      {activeConnectionId && open[activeConnectionId] && (
+      {schemaOpen && (
         <>
-          <div className="mt-2 flex items-center justify-between border-t border-line-soft px-3 pt-3 pb-1.5">
+          {/* Doubles as the rule between the two halves: the border this
+              replaces was already drawn exactly here. */}
+          <div
+            onPointerDown={onRowDown}
+            onDoubleClick={() => setConnHeight(null)}
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="Resize connection list"
+            className="group relative mt-2 h-px shrink-0 cursor-row-resize bg-line-soft"
+          >
+            <div className="absolute -top-1 h-2 w-full group-hover:bg-accent/30" />
+          </div>
+
+          <div className="flex items-center justify-between px-3 pt-3 pb-1.5">
             <span className="label-eyebrow">
               {serverOnly || keyspace ? "Databases" : "Schema"}
             </span>
@@ -544,8 +856,14 @@ export function Sidebar() {
               /* A key-value store's whole tree: numbered databases, each of
                  which is one flat namespace. No schemas, no object groups, and
                  no disclosure — there is nothing under a database except the
-                 keys, and a caret hiding one row is a caret for its own sake. */
-              visibleDatabases === null ? (
+                 keys, and a caret hiding one row is a caret for its own sake.
+
+                 Queues hang below it rather than inside a database, because
+                 that is where they are: BullMQ writes into whichever database
+                 the application connected to, and the section describes this
+                 session's. */
+              <>
+              {visibleDatabases === null ? (
                 <p className="flex items-center gap-1.5 py-2 pl-1.5 text-[11px] text-ink-faint">
                   <Spinner size={9} className="text-accent" label="Reading databases" />
                   Reading databases…
@@ -608,7 +926,14 @@ export function Sidebar() {
                     </button>
                   );
                 })
-              )
+              )}
+
+              <QueuesSection
+                connectionId={activeConnectionId}
+                needle={needle}
+                viewedTable={viewedTable}
+              />
+              </>
             ) : serverOnly ? (
               <>
                 <DisclosureRow

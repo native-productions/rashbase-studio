@@ -221,16 +221,33 @@ bun test                   # frontend, in src/__tests__/
 cd src-tauri && cargo test # backend
 ```
 
-The Redis suite needs a real server and is skipped without one. It covers what
-unit tests cannot reach: that the cursor walk visits every key exactly once,
-that a value search matching nothing stops on its budget and reports honestly,
-that writes read back, and that a key whose name holds a space survives being
-deleted.
+Two Redis suites need a real server and are skipped without one. They cover
+what unit tests cannot reach.
+
+`redis_keyspace` checks that the cursor walk visits every key exactly once, that
+a value search matching nothing stops on its budget and reports honestly, that
+writes read back, and that a key whose name holds a space survives being
+deleted. It begins with `FLUSHDB`, so point it at a database you do not mind
+losing, and run it single-threaded — its cases share one database.
+
+`bull_retry` checks that a retry does what BullMQ's own retry does: the failed
+reason cleared, the marker set so a blocked worker wakes, a second retry of the
+same job refused rather than queued twice, `attemptsMade` kept unless the reset
+was asked for, `lifo` putting the job on the end that runs next, and a job
+belonging to a flow put back among its parent's dependencies. It flushes
+nothing — every key it writes is under its own prefix and it deletes exactly
+those — so it takes its own database only to stay clear of the other suite's
+`FLUSHDB`.
 
 ```sh
 docker run -d -p 6379:6379 redis:7
 cd src-tauri
-RASHBASE_REDIS_HOST=127.0.0.1 cargo test --test redis_keyspace -- --nocapture
+
+RASHBASE_REDIS_HOST=127.0.0.1 RASHBASE_REDIS_DB=12 \
+  cargo test --test redis_keyspace -- --test-threads=1 --nocapture
+
+RASHBASE_REDIS_HOST=127.0.0.1 RASHBASE_REDIS_BULL_DB=10 \
+  cargo test --test bull_retry -- --nocapture
 ```
 
 It seeds its own fixture, which means it starts with `FLUSHDB`. It refuses to
@@ -289,6 +306,8 @@ src-tauri/src/
     registry.rs          Driver registry and open sessions
     postgres/            The PostgreSQL driver
     redis/               The Redis driver: keyspace walk, console, writes
+      bull.rs            BullMQ read as a lens over that keyspace
+      lua/               BullMQ's own scripts, vendored verbatim
   ssh.rs                 SSH tunnel, with known_hosts enforcement
   keychain.rs            OS keystore wrapper
   error.rs               One serializable error shape
@@ -406,6 +425,106 @@ Putra"` is four arguments and not five. Commands that never return
 (`SUBSCRIBE`, `MONITOR`, `BLPOP`) are refused by name: this driver has no
 `cancel`, so one of them would wedge the session with nothing to press.
 
+### Tracing a BullMQ queue
+
+BullMQ is not a database. It is a key layout one Node library writes into Redis,
+so it lives beside the keyspace walk rather than as a third driver: the
+connection, the credentials and the tunnel are already open, and asking for a
+second connection to the same server to look at the same keys through a
+different lens would be a tax rather than a feature. The Queues section appears
+under the databases on any Redis connection, and only walks when it is opened —
+finding queues means matching `<prefix>:*:meta` across the keyspace, which on an
+instance holding millions of session keys is a real cost.
+
+**The layout is a constant, so there is no layout code.** Every BullMQ queue has
+the same lifecycle, so node positions are a table in `lib/constants/bullmq.ts`.
+No dagre pass, no stored positions, no drag to persist, no "reset layout" — the
+diagram cannot be rearranged because there is nothing about it to get wrong.
+`prioritized` and `waiting-children` are drawn only when something is in them:
+they exist for applications that use priorities or flows, and two empty boxes on
+every other queue is noise in a surface whose whole job is to be glanced at.
+
+**The beam is a measurement.** The rate on each edge is transitions per second
+read off the queue's own event stream, not the difference between two polls of
+the counts — that difference cannot tell a queue where fifty jobs went in and
+fifty came out from a queue where nothing happened. An edge that saw nothing in
+the last five seconds draws a still line, so a queue that has stopped looks
+stopped. The rate is also printed as a number beside it, because speed alone
+cannot separate four a second from four hundred.
+
+`prev` is what makes this work: BullMQ names an event after the state the job
+arrived in and carries the one it left in, so the pair is the edge. Without it a
+retried job is indistinguishable from a newly added one, and a retry storm draws
+as ordinary intake.
+
+**The diagram is live, the rows are a snapshot, and the difference is stated.**
+Polling, not push: once a second while the tab is `Live` and the window has
+focus, so at most a second behind. That poll updates the counts, the rates, the
+`paused` badge and the trace's event steps. It deliberately does *not* re-read
+the job rows — pulling rows out from under a selection while someone is staging
+a retry is the one thing this surface must not do.
+
+So the page says how far behind it is. The count comes off the event stream
+rather than from subtracting the live count from the page's own total: three
+jobs failing while three others are retried leaves the total identical and the
+page entirely out of date, and a net difference of zero is not evidence that
+nothing happened. `⌘R` or the `⟳` beside the state re-reads, with the busy
+indicator the rest of the app uses. The Queues section in the sidebar keeps the
+queue being watched in step and has its own `⟳` for another walk.
+
+**Unknown is not zero.** The stream is trimmed at ten thousand entries by
+default. When a poll finds it was trimmed past where the last one stopped, the
+rates go to `null` rather than to a number derived from a window with holes in
+it: every beam stops and the toolbar says `events trimmed · rate unknown`.
+Drawing a zero there would claim the queue is idle at the exact moment we cannot
+tell.
+
+**A job page is a `QueryResult`.** `jobsToResult` in `lib/utils/bullmq.ts` turns
+one page into the same result the grid already draws, which is why the
+virtualizer, the cell selection and the JSON tree needed no changes — the same
+seam `keyPageToResult` sits on one feature over.
+
+**Which end of the queue a page starts from is stated.** `wait` is a list
+LPUSHed and popped from the right, so the job that runs next is at its *tail*;
+`delayed` is a sorted set read from its head. Both are the job that happens
+next, and both are labelled as such. `completed` and `failed` hold a finish time
+and are read newest first. A page of `delayed` labelled "most recent first"
+would tell the reader the top row is the last thing scheduled when it is the
+next thing to fire.
+
+**Retry runs BullMQ's own script.** `reprocessJob` is vendored verbatim into
+`drivers/redis/lua/`, flattened from the five files upstream keeps it in. Not
+because a pair of commands would be hard, but because the script does six things
+atomically and one of them is invisible: a job produced by a flow has to be put
+back into its parent's dependency set, and a retry that moves the job without
+that leaves the parent waiting forever on a dependency that is now running. The
+marker `ZADD` is the second: it is what wakes a worker blocked on the marker key,
+and without it the job sits in `wait` until the next drain poll and the retry
+reads as having done nothing.
+
+Only `failed` and `completed` offer it, because those are the only two states
+with a finished set to move out of. The staging is the confirmation, the same
+bargain the staged deletion makes: the rows are marked, the status bar prints
+what is about to run, and `⌘S` runs something already read. The marks are not
+red — red in this app means the thing that cannot be undone, and a retry puts
+work back.
+
+`attemptsMade` is kept by default and cleared on `⇧⌘S`. They are two bindings
+rather than an option, because both are ordinary things to want and they are
+different decisions: a job that has used its whole allowance fails again within
+seconds unless the counter is cleared, and a job that has not should never be
+handed a fresh allowance by a default nobody chose.
+
+Every job in a batch is reported on: `14 retried · 2 gone · 1 no longer in that
+state`. Someone else retrying two of them first makes the batch partial, not
+failed, and rounding that up to "15 retried" would claim work the app did not do.
+
+Pausing is the one place BullMQ v4 and v5 diverge dangerously — before v5 a
+paused queue held its jobs in a separate `paused` list, and `reprocessJob`
+pushes to `wait` and reads `paused` off the meta hash. One `LLEN` before the
+batch refuses rather than starting a job on a queue the application believes is
+stopped.
+
 ### One connection per session, not a pool
 
 `SET`, `BEGIN`, temp tables, and `search_path` must survive between statements
@@ -430,17 +549,65 @@ a string or a hash field, edit or clear a TTL, stage keys for deletion and
 commit with `⌘S`, and run raw commands in a console tab. See
 [Browsing a keyspace](#browsing-a-keyspace).
 
+On a Redis connection holding BullMQ queues: the sidebar's Queues section walks
+for them, and opening one draws its lifecycle as a diagram with the exact count
+in each state and the measured transition rate on each edge. Clicking a state
+lists its jobs in the grid; selecting a job shows its history, built from the
+queue's event stream where that still reaches and from the job's own timestamps
+where it does not. Failed and completed jobs can be staged and retried with
+`⌘S`, or `⇧⌘S` to reset the attempt counter as well.
+
+The diagram polls once a second; the job rows are a snapshot that says how far
+behind it is and is re-read with `⌘R`. See
+[Tracing a BullMQ queue](#tracing-a-bullmq-queue).
+
 A connection that names no database is treated as a server: the sidebar lists
 the databases the role can open, and picking one derives a connection named
 after it, nested under the server and authenticating with the server's stored
 credential. ⌘⇧K reaches the same picker from any open connection.
 
+One database at a time per server. Picking a second one closes the session on
+the first, so the sidebar never shows two live databases under one server; the
+server's own session stays open, because it is what lists them. Other servers
+are untouched — a local Postgres and a production replica stay open side by
+side. The same holds for Redis, where a numbered database is a derived
+connection like any other.
+
+Rows are deleted the way Redis keys are: select a row, press `Delete`, and it
+turns red and struck through. Several at once works the way a file list does —
+`⌘`-click adds one more row, `⇧`-click runs from the caret to the row clicked —
+and `Delete` marks the whole selection. Nothing has been sent — the footer prints the
+statements that will run and the row count, and `⌘S` is the confirmation,
+`Esc` the way out. The rows are named by the table's own primary key, which the
+backend re-derives from the catalogue and binds; a table without one cannot be
+marked at all. Every staged row goes in one transaction, or none of them do:
+a row that no longer matches, or one another table still references, rolls the
+whole set back. That refusal opens a dialog rather than a toast — a foreign key
+violation names the referencing table and the key still pointing at the row, and
+that is the answer to "why not" — and the marks are left standing so the delete
+can be retried once the reference is gone.
+
+Two tabs can be on screen at once. ⌥-click a table in the sidebar, or pick
+"Open in split view" from its right-click menu, and it opens beside what you are
+already looking at instead of replacing it; the divider between the two is
+draggable and the ratio is kept across launches. Both panes are in the tab
+strip, the focused one marked — that is the one ⌘R runs and the status bar
+describes. Closing the second pane's tab closes the split.
+
+Closing a session does not close its tabs. The tab strip shows the tabs of the
+connection you are on, and going back to a database brings its tabs back as
+they were — same SQL, same filters, same sort. One schema is unfolded at a
+time, and folding one keeps what it read, so opening it again costs no round
+trip.
+
 SSH tunnelling works: a connection can dial through a jump host, authenticating
 with a key or a password. Unknown host keys are refused rather than trusted on
 first use.
 
-Not built yet: insert and delete rows, query history, export, and AI. For
-databases, see [Database support](#database-support).
+Not built yet: inserting rows, query history, and AI. On queues:
+removing and promoting jobs, and a configurable key prefix — the walk assumes
+BullMQ's default `bull`. For databases, see
+[Database support](#database-support).
 
 ## License
 

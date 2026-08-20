@@ -100,6 +100,17 @@ pub trait Driver: Send + Sync {
 pub trait Session: Send + Sync {
     fn info(&self) -> &ConnectionInfo;
 
+    /// The concrete session, for features that belong to one driver's
+    /// ecosystem rather than to databases in general.
+    ///
+    /// One escape hatch instead of a method per such feature. BullMQ is the
+    /// case it exists for: it is a key layout one Node library writes into
+    /// Redis, and putting `retry_jobs` on the trait every driver implements
+    /// would leave Postgres carrying a method about a JavaScript queue for as
+    /// long as the trait lives. The catalogue methods above are different in
+    /// kind — every one of them names something databases have.
+    fn as_any(&self) -> &(dyn std::any::Any + Send + Sync);
+
     /// Runs the statement exactly as given.
     ///
     /// `max_rows` caps how many rows of each result set are *kept*, not how
@@ -145,6 +156,25 @@ pub trait Session: Send + Sync {
         _keys: &[(String, String)],
     ) -> Result<Option<String>> {
         Err(Error::Unsupported("editing a cell"))
+    }
+
+    /// Removes whole rows, each identified by the table's own primary key.
+    ///
+    /// Every key travels as a bound parameter, and which columns may appear in
+    /// the `where` clause is decided from the catalogue, not by the caller —
+    /// the same rule `update_cell` follows, for the same reason: the frontend
+    /// says which rows it means, never how they are found.
+    ///
+    /// All of them or none. A row that no longer matches is the case this
+    /// exists to catch, and reporting it after half the set is already gone
+    /// would leave the user with no way to tell which half.
+    async fn delete_rows(
+        &self,
+        _schema: &str,
+        _table: &str,
+        _rows: &[Vec<(String, String)>],
+    ) -> Result<u64> {
+        Err(Error::Unsupported("deleting rows"))
     }
 
     // -- Catalogue ----------------------------------------------------------

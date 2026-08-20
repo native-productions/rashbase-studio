@@ -130,6 +130,37 @@ export function updatePreview({
   return `update ${quoteIdent(schema)}.${quoteIdent(table)} set ${quoteIdent(column)} = $1 where ${where}`;
 }
 
+/**
+ * The staged row deletions, as the statement they will run.
+ *
+ * One `delete` per row, the way the backend runs them, rather than a single
+ * `in (...)` that would read tidier and describe something else. The key values
+ * are shown inline because they are already on screen in the rows being struck
+ * through; nothing else is interpolated, and the backend binds every one of
+ * them.
+ *
+ * Truncated after the first few: a footer is one line, and "and 12 more" is an
+ * honest tail where a clipped statement would not be.
+ */
+export function deleteRowsPreview(
+  schema: string,
+  table: string,
+  rows: { column: string; value: string }[][],
+  shown = 2,
+): string {
+  const head = rows
+    .slice(0, shown)
+    .map((keys) => {
+      const where = keys
+        .map((k) => `${quoteIdent(k.column)} = ${quoteLiteral(k.value)}`)
+        .join(" and ");
+      return `delete from ${quoteIdent(schema)}.${quoteIdent(table)} where ${where}`;
+    })
+    .join("; ");
+  const rest = rows.length - shown;
+  return rest > 0 ? `${head}; … and ${rest} more` : head;
+}
+
 // ---------------------------------------------------------------------------
 // Row filters
 // ---------------------------------------------------------------------------

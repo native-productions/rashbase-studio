@@ -29,13 +29,20 @@ export function objectMenuItems(object: DbObject, selectedCount = 1): ContextMen
   // to dump, and nothing to drop from here. The one thing you can do with it
   // is look at its shape.
   if (object.kind === "diagram") {
-    return [{ kind: "item", id: "diagram.open", label: "Show diagram" }];
+    return [
+      { kind: "item", id: "diagram.open", label: "Show diagram" },
+      { kind: "item", id: "open.split", label: "Show diagram in split view" },
+    ];
   }
 
   const isFunction = object.kind === "function";
   const isTable = object.kind === "table";
 
   const items: ContextMenuItem[] = [
+    // First, because it is the only entry that opens the object rather than
+    // describing it. ⌥ on the row is the same gesture without the menu.
+    { kind: "item", id: "open.split", label: "Open in split view", hint: "⌥click" },
+    { kind: "separator" },
     {
       kind: "submenu",
       label: "Copy",

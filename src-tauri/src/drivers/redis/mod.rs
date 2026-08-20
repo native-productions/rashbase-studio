@@ -7,7 +7,11 @@
 //!
 //! What it does have is a flat key namespace, which is `list_keys`, and a
 //! command protocol, which is `execute`.
+//!
+//! `bull` is a lens over that keyspace rather than a driver of its own. See
+//! its own header for why BullMQ is not a third database.
 
+pub mod bull;
 mod command;
 mod keyspace;
 mod session;

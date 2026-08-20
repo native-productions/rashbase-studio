@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import {
+  deleteRowsPreview,
   dropStatement,
   filterWhere,
   insertStatement,
@@ -269,4 +270,45 @@ test("count carries the same where as the page", () => {
   expect(tableCountSql({ schema: "public", table: "users" })).toBe(
     'select count(*) from "public"."users";',
   );
+});
+
+
+/**
+ * The delete preview is the confirmation — there is no dialog behind it. It has
+ * to name the same rows the write names, quote what it interpolates, and say
+ * when it is showing only part of the set. A preview that silently listed two
+ * rows while five went would be the app lying at the one moment it must not.
+ */
+test("the delete preview names each row by its key, quoted", () => {
+  expect(
+    deleteRowsPreview("public", "users", [[{ column: "id", value: "7" }]]),
+  ).toBe(`delete from "public"."users" where "id" = '7'`);
+});
+
+test("a composite key becomes one condition per part", () => {
+  expect(
+    deleteRowsPreview("app", "events", [
+      [
+        { column: "tenant", value: "a" },
+        { column: "seq", value: "3" },
+      ],
+    ]),
+  ).toBe(`delete from "app"."events" where "tenant" = 'a' and "seq" = '3'`);
+});
+
+test("the preview says how many rows it is not showing", () => {
+  const rows = ["1", "2", "3", "4"].map((value) => [{ column: "id", value }]);
+  const preview = deleteRowsPreview("public", "t", rows);
+  expect(preview).toContain(`"id" = '1'`);
+  expect(preview).toContain(`"id" = '2'`);
+  // The tail is a count, not a clipped statement.
+  expect(preview.endsWith("… and 2 more")).toBe(true);
+  expect(preview).not.toContain(`"id" = '3'`);
+});
+
+test("a value carrying a quote cannot end the literal", () => {
+  const preview = deleteRowsPreview("public", "t", [
+    [{ column: "id", value: "a'; drop table users; --" }],
+  ]);
+  expect(preview).toContain(`'a''; drop table users; --'`);
 });

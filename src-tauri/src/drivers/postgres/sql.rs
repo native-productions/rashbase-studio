@@ -48,6 +48,29 @@ pub fn build_update(
     )
 }
 
+/// Builds the one statement this application generates that removes data.
+///
+/// The same bargain `build_update` makes, minus the value: every key travels as
+/// a bound parameter starting at `$1`, only identifiers and catalogue type
+/// names are interpolated, and the `where` clause is the table's whole primary
+/// key. One row per statement rather than an `in (...)` over many, so a
+/// mismatch names the row it happened on and the transaction can be rolled back
+/// on the first one that does not match exactly once.
+pub fn build_delete(schema: &str, table: &str, keys: &[(String, String)]) -> String {
+    let conditions: Vec<String> = keys
+        .iter()
+        .enumerate()
+        .map(|(i, (name, ty))| format!("{} = cast(${} as {})", quote_ident(name), i + 1, ty))
+        .collect();
+
+    format!(
+        "delete from {}.{} where {}",
+        quote_ident(schema),
+        quote_ident(table),
+        conditions.join(" and "),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,5 +143,36 @@ mod tests {
         let keys = vec![("id".to_string(), "integer".to_string())];
         let sql = build_update("public", "t", "amount", "numeric(10,2)", &keys);
         assert!(sql.contains("cast($1 as numeric(10,2))"));
+    }
+
+    /// The other statement that destroys data. The property that matters is the
+    /// one an empty key list would break: a `delete from t` with no `where` is
+    /// the whole table, and it would run without complaint.
+    #[test]
+    fn builds_a_bound_delete() {
+        let keys = vec![("id".to_string(), "integer".to_string())];
+        assert_eq!(
+            build_delete("public", "users", &keys),
+            "delete from \"public\".\"users\" where \"id\" = cast($1 as integer)"
+        );
+    }
+
+    #[test]
+    fn numbers_a_composite_key_from_one() {
+        let keys = vec![
+            ("tenant".to_string(), "uuid".to_string()),
+            ("seq".to_string(), "bigint".to_string()),
+        ];
+        let sql = build_delete("app", "events", &keys);
+        // No value to bind, so the key starts at $1 rather than $2.
+        assert!(sql.contains("\"tenant\" = cast($1 as uuid) and \"seq\" = cast($2 as bigint)"));
+    }
+
+    #[test]
+    fn quotes_identifiers_on_the_delete_path_too() {
+        let keys = vec![("a\"b".to_string(), "integer".to_string())];
+        let sql = build_delete("we\"ird", "ta\"ble", &keys);
+        assert!(sql.starts_with("delete from \"we\"\"ird\".\"ta\"\"ble\" where"));
+        assert!(sql.contains("\"a\"\"b\" = cast($1 as integer)"));
     }
 }

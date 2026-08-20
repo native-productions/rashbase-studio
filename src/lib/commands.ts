@@ -1,5 +1,5 @@
 import { selectedSql } from "@/lib/activeEditor";
-import { hasRows, isKeyspace } from "@/lib/utils/tabs";
+import { hasRows, isKeyspace, isQueue, rowsDeletable } from "@/lib/utils/tabs";
 import { useApp, activeTab } from "@/store/app";
 
 /**
@@ -39,6 +39,39 @@ export const COMMANDS: Command[] = [
   // the first *enabled* command that matches, so the order here is the priority:
   // staged deletions are the more urgent thing to be able to call off, and a tab
   // can only ever be in one of the two states anyway.
+  // Ahead of the keyspace pair only because the list is read in order and a tab
+  // can be one kind or the other, never both. Same bargain, third shape: a row
+  // marked in a table, deleted by its primary key.
+  {
+    id: "rows.clearStaged",
+    label: "Clear staged row deletions",
+    group: "Query",
+    keys: "Esc",
+    enabled: () => {
+      const tab = activeTab(s());
+      return !!tab && rowsDeletable(tab) && tab.staged.length > 0;
+    },
+    run: () => {
+      const tab = activeTab(s());
+      if (tab) s().clearStaged(tab.id);
+    },
+  },
+  {
+    id: "rows.commitStaged",
+    label: "Delete staged rows",
+    group: "Query",
+    keys: "⌘S",
+    // The rows are already red and the status bar already prints every
+    // statement, so this is the confirmation rather than the request for one.
+    enabled: () => {
+      const tab = activeTab(s());
+      return !!tab && rowsDeletable(tab) && tab.staged.length > 0;
+    },
+    run: () => {
+      const tab = activeTab(s());
+      if (tab) void s().commitStaged(tab.id);
+    },
+  },
   {
     id: "keys.clearStaged",
     label: "Clear staged deletions",
@@ -67,6 +100,63 @@ export const COMMANDS: Command[] = [
     run: () => {
       const tab = activeTab(s());
       if (tab) void s().commitStaged(tab.id);
+    },
+  },
+  // Ahead of `query.cancel` for the same reason the keyspace pair is: a staged
+  // write is the more urgent thing to be able to call off, and a tab can only
+  // be in one of these states at a time.
+  {
+    id: "queue.clearStaged",
+    label: "Clear staged retries",
+    group: "Query",
+    keys: "Esc",
+    enabled: () => {
+      const tab = activeTab(s());
+      return !!tab && isQueue(tab.object) && tab.staged.length > 0;
+    },
+    run: () => {
+      const tab = activeTab(s());
+      if (tab) s().clearStaged(tab.id);
+    },
+  },
+  {
+    id: "queue.retry",
+    label: "Retry staged jobs",
+    group: "Query",
+    keys: "⌘S",
+    // The rows are already marked and the status bar already prints what is
+    // about to run, so this is the confirmation rather than the request for one
+    // — the same bargain the staged deletion makes.
+    enabled: () => {
+      const tab = activeTab(s());
+      return !!tab && isQueue(tab.object) && tab.staged.length > 0;
+    },
+    run: () => {
+      const tab = activeTab(s());
+      if (tab) void s().commitRetry(tab.id, false);
+    },
+  },
+  {
+    id: "queue.retryReset",
+    label: "Retry staged jobs and reset attempts",
+    group: "Query",
+    keys: "⇧⌘S",
+    /**
+     * Its own binding rather than an option on the one above.
+     *
+     * A job that has used its whole allowance fails again within seconds
+     * unless the counter is cleared; a job that has not should never be handed
+     * a fresh allowance by a default nobody chose. Both are ordinary things to
+     * want and they are different decisions, so they are different keys and the
+     * status bar names both.
+     */
+    enabled: () => {
+      const tab = activeTab(s());
+      return !!tab && isQueue(tab.object) && tab.staged.length > 0;
+    },
+    run: () => {
+      const tab = activeTab(s());
+      if (tab) void s().commitRetry(tab.id, true);
     },
   },
   {
@@ -199,6 +289,30 @@ export const COMMANDS: Command[] = [
   },
 
   // ---- View -------------------------------------------------------------
+  {
+    id: "view.split",
+    label: "Open tab in split view",
+    group: "View",
+    // No binding: it is a mouse gesture first — ⌥click a table, or the row's
+    // own menu — and the palette is here for the times the tab is already open.
+    enabled: () => {
+      const tab = activeTab(s());
+      return !!tab && tab.id !== s().splitTabId;
+    },
+    run: () => {
+      const tab = activeTab(s());
+      if (tab) s().openInSplit(tab.id);
+    },
+  },
+  {
+    id: "view.split.close",
+    label: "Close split view",
+    group: "View",
+    enabled: () => !!s().splitTabId,
+    // The tab stays: closing the split is about the layout, not about being
+    // done with what was in it.
+    run: () => s().closeSplit(),
+  },
   {
     id: "view.sidebar",
     label: "Toggle sidebar",

@@ -1,7 +1,8 @@
-import { quoteLiteral, updatePreview } from "@/lib/utils/sql";
-import { rowKeysFor } from "@/lib/utils/rowKeys";
+import { deleteRowsPreview, quoteLiteral, updatePreview } from "@/lib/utils/sql";
+import { rowKeysFor, stagedRowsIn } from "@/lib/utils/rowKeys";
 import { deletePreview, stagedKeysIn } from "@/lib/utils/redis";
-import { isKeyspace } from "@/lib/utils/tabs";
+import { retryPreview, stagedJobsIn, stateLabel } from "@/lib/utils/bullmq";
+import { isKeyspace, rowsDeletable } from "@/lib/utils/tabs";
 import { shortServerVersion } from "@/lib/utils/version";
 import type { QueryTab } from "@/lib/types";
 import { Spinner } from "@/components/ui/Spinner";
@@ -73,6 +74,72 @@ export function StatusBar() {
    */
   const staged = tab && isKeyspace(tab.object) && tab.staged.length > 0 ? tab : null;
   const stagedKeys = staged && result ? stagedKeysIn(result, new Set(staged.staged)) : [];
+
+  /**
+   * The staged retry, as what it is about to do.
+   *
+   * The same bargain the staged deletion makes one bar down, and deliberately
+   * not the same colour. Red there means the thing that cannot be undone; a
+   * retry puts work back into the queue, and dressing it as a destruction would
+   * make the one genuinely dangerous footer in this app mean less.
+   */
+  /**
+   * The staged row deletions, as the statements they will run.
+   *
+   * The third shape of the same bargain, and the reason it needs no dialog is
+   * the reason the other two do not: the rows are already struck through in
+   * red, and this says exactly what is about to be sent. `stagedRowsIn` is the
+   * function the store uses to build the write, so the footer cannot name a
+   * different set of rows than the one that goes.
+   */
+  const stagedRows =
+    tab && rowsDeletable(tab) && tab.staged.length > 0 && result
+      ? stagedRowsIn(tab.columns, result, new Set(tab.staged))
+      : [];
+
+  const stagedRetry =
+    tab?.object?.kind === "queue" && tab.queue?.state && tab.staged.length > 0 ? tab : null;
+  const retryIds = stagedRetry && result ? stagedJobsIn(result, new Set(stagedRetry.staged)) : [];
+
+  if (retryIds.length > 0 && stagedRetry) {
+    const state = stagedRetry.queue!.state!;
+    return (
+      <footer className="flex h-6 shrink-0 items-center gap-3 border-t border-line-soft bg-raised px-3 text-[11px]">
+        <span className="min-w-0 truncate font-mono text-str select-text">
+          {retryPreview(retryIds, stateLabel(state), false)}
+        </span>
+        <span className="shrink-0 text-ink-muted">
+          {retryIds.length} {retryIds.length === 1 ? "job" : "jobs"}
+        </span>
+        <span className="ml-auto shrink-0 text-ink-faint">
+          <span className="font-mono text-ink-muted">⌘S</span> retry
+          {/* Named rather than hidden behind the same key. A job that has used
+              its whole allowance fails again within seconds unless the counter
+              is cleared, and a job that has not should not silently be given a
+              fresh one — so the two are two bindings, not a default. */}
+          <span className="ml-2 font-mono text-ink-muted">⇧⌘S</span> retry + reset attempts
+          <span className="ml-2 font-mono text-ink-muted">esc</span> cancel
+        </span>
+      </footer>
+    );
+  }
+
+  if (stagedRows.length > 0 && tab?.object) {
+    return (
+      <footer className="flex h-6 shrink-0 items-center gap-3 border-t border-danger/30 bg-danger/10 px-3 text-[11px]">
+        <span className="min-w-0 truncate font-mono text-danger select-text">
+          {deleteRowsPreview(tab.object.schema, tab.object.name, stagedRows)}
+        </span>
+        <span className="shrink-0 text-ink-muted">
+          {stagedRows.length} {stagedRows.length === 1 ? "row" : "rows"}
+        </span>
+        <span className="ml-auto shrink-0 text-ink-faint">
+          <span className="font-mono text-ink-muted">⌘S</span> delete{" "}
+          <span className="ml-2 font-mono text-ink-muted">esc</span> cancel
+        </span>
+      </footer>
+    );
+  }
 
   if (stagedKeys.length > 0) {
     return (

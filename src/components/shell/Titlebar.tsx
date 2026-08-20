@@ -1,9 +1,6 @@
 import { useState } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ContextMenu } from "@/components/ui/ContextMenu";
 import { useApp } from "@/store/app";
-
-const appWindow = getCurrentWindow();
 
 /**
  * macOS `titleBarStyle: "Overlay"` keeps the native traffic lights and hands us
@@ -24,13 +21,25 @@ const appWindow = getCurrentWindow();
 export function Titlebar() {
   const tabs = useApp((s) => s.tabs);
   const activeTabId = useApp((s) => s.activeTabId);
+  const activeConnectionId = useApp((s) => s.activeConnectionId);
+  const splitTabId = useApp((s) => s.splitTabId);
+  const focusedPane = useApp((s) => s.focusedPane);
   const open = useApp((s) => s.open);
   const connections = useApp((s) => s.connections);
   const setActiveTab = useApp((s) => s.setActiveTab);
+  const openInSplit = useApp((s) => s.openInSplit);
+  const closeSplit = useApp((s) => s.closeSplit);
   const closeTab = useApp((s) => s.closeTab);
   const closeOtherTabs = useApp((s) => s.closeOtherTabs);
   const togglePinTab = useApp((s) => s.togglePinTab);
   const openTab = useApp((s) => s.openTab);
+
+  /**
+   * One connection's tabs at a time. Switching database closes the session it
+   * left, and a strip mixing the two would offer tabs whose next query cannot
+   * run. Nothing is closed — a connection's tabs come back with it, unchanged.
+   */
+  const visibleTabs = tabs.filter((t) => t.connectionId === activeConnectionId);
 
   const [menu, setMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
   const menuTab = menu ? tabs.find((t) => t.id === menu.tabId) : undefined;
@@ -42,12 +51,17 @@ export function Titlebar() {
     if (id === "close") closeTab(tabId);
     if (id === "close.others") closeOtherTabs(tabId);
     if (id === "pin") togglePinTab(tabId);
+    if (id === "split") openInSplit(tabId);
+    if (id === "split.close") closeSplit();
   }
 
   return (
     <header
       data-tauri-drag-region
-      onDoubleClick={() => void appWindow.toggleMaximize()}
+      // No `onDoubleClick` here. Tauri's own drag-region script already toggles
+      // maximize, on macOS from `mouseup` so the gesture can be cancelled by
+      // moving the pointer; `dblclick` fires after that, so a handler of ours
+      // would toggle a second time and the window would never come back down.
       className="flex h-11 shrink-0 items-stretch gap-1 border-b border-line-soft bg-raised pl-traffic pr-2"
     >
       {/* The strip itself is the drag surface. Tauri only starts a drag when
@@ -58,8 +72,13 @@ export function Titlebar() {
         data-tauri-drag-region
         className="flex min-w-0 flex-1 items-end gap-px overflow-x-auto pl-1"
       >
-        {tabs.map((tab) => {
-          const active = tab.id === activeTabId;
+        {visibleTabs.map((tab) => {
+          // On screen in one of the two panes, and whether it is the one the
+          // keyboard is talking to. Both are drawn as open; only the focused
+          // one is drawn as current, because ⌘R goes there.
+          const shown = tab.id === activeTabId || tab.id === splitTabId;
+          const active =
+            tab.id === (focusedPane === "split" ? splitTabId : activeTabId);
           const conn = connections.find((c) => c.id === tab.connectionId);
           // A table tab is named for its table; a query tab borrows the
           // connection name, which is the only thing distinguishing it.
@@ -76,7 +95,9 @@ export function Titlebar() {
                 "group flex h-8 max-w-52 min-w-32 shrink-0 cursor-default items-center gap-2 rounded-t-md border-t border-r border-l px-3 text-[12px]",
                 active
                   ? "border-line-soft bg-base text-ink"
-                  : "border-transparent text-ink-faint hover:text-ink-muted",
+                  : shown
+                    ? "border-line-soft bg-base/50 text-ink-muted"
+                    : "border-transparent text-ink-faint hover:text-ink-muted",
               ].join(" ")}
             >
               {/* No connection dot here. The status bar already states which
@@ -144,6 +165,10 @@ export function Titlebar() {
             ...(tabs.some((t) => t.id !== menuTab.id && !t.pinned)
               ? ([{ kind: "item", id: "close.others", label: "Close other tabs" }] as const)
               : []),
+            { kind: "separator" },
+            ...(menuTab.id === splitTabId
+              ? ([{ kind: "item", id: "split.close", label: "Close split view" }] as const)
+              : ([{ kind: "item", id: "split", label: "Open in split view" }] as const)),
             { kind: "separator" },
             { kind: "item", id: "pin", label: menuTab.pinned ? "Unpin tab" : "Pin tab" },
           ]}

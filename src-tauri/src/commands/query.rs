@@ -54,3 +54,24 @@ pub async fn update_cell(
     db.update_cell(&id, &schema, &table, &column, value.as_deref(), &keys)
         .await
 }
+
+/// Removes whole rows and reports how many went.
+///
+/// The second command that destroys user data, and it makes the same bargain as
+/// the first: the rows are named by their primary key, every key is bound, and
+/// the `where` clause is derived backend side from the catalogue. See the
+/// driver's `delete_rows`.
+#[tauri::command]
+pub async fn delete_rows(
+    db: State<'_, DbState>,
+    id: String,
+    schema: String,
+    table: String,
+    rows: Vec<Vec<KeyValue>>,
+) -> Result<u64> {
+    let rows: Vec<Vec<(String, String)>> = rows
+        .into_iter()
+        .map(|keys| keys.into_iter().map(|k| (k.column, k.value)).collect())
+        .collect();
+    db.delete_rows(&id, &schema, &table, &rows).await
+}

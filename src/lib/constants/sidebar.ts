@@ -11,6 +11,9 @@ export const KIND_GLYPH: Record<DbObject["kind"], string> = {
   // A flat namespace rather than a shape: no columns to rule, no rows to line
   // up, just a bag with things in it.
   keyspace: "⬡",
+  // Work moving in one direction through stages, which is the one thing a
+  // queue is and the one thing the other glyphs here are not.
+  queue: "⇥",
 };
 
 /** Schema-less object, before the schema it lives in is attached. */

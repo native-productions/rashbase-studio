@@ -2,29 +2,43 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Titlebar } from "@/components/shell/Titlebar";
 import { Sidebar } from "@/components/shell/Sidebar";
 import { StatusBar } from "@/components/shell/StatusBar";
-import { SqlEditor } from "@/components/editor/SqlEditor";
-import { focusErrorPosition } from "@/lib/activeEditor";
-import { ResultGrid } from "@/components/grid/ResultGrid";
+import { TabPane } from "@/components/shell/TabPane";
 import { CellModal } from "@/components/grid/CellModal";
-import { Spinner } from "@/components/ui/Spinner";
-import { RowPanel } from "@/components/grid/RowPanel";
-import { FilterBar } from "@/components/table/FilterBar";
-import { TableFooter } from "@/components/table/TableFooter";
-import { QueryFooter } from "@/components/query/QueryFooter";
-import { StructureView } from "@/components/table/StructureView";
-import { ErdView } from "@/components/erd/ErdView";
-import { DefinitionView } from "@/components/table/DefinitionView";
 import { CommandPalette } from "@/components/palette/CommandPalette";
 import { ConnectionSheet } from "@/components/connection/ConnectionSheet";
 import { ExportDialog } from "@/components/export/ExportDialog";
+import { ErrorDialog } from "@/components/ui/ErrorDialog";
 import { Logo } from "@/components/Logo";
 import { useHotkeys } from "@/lib/hotkeys";
 import { useAppMenu } from "@/lib/appMenu";
-import { hasRows } from "@/lib/utils/tabs";
 import { savePinnedTabs } from "@/lib/pinnedTabs";
-import { activeTab, useApp } from "@/store/app";
+import { useApp } from "@/store/app";
 
-const MIN_PANE = 80;
+/**
+ * How the width is shared between two panes, kept across launches.
+ *
+ * A fraction rather than pixels: a split the user set on a wide window should
+ * stay the same split when the window is narrowed, not collapse one side.
+ * `localStorage` for the same reason as the sidebar's width — window layout,
+ * not data.
+ */
+const SPLIT_KEY = "rashbase.splitRatio.v1";
+const MIN_RATIO = 0.2;
+const MAX_RATIO = 0.8;
+
+function clampRatio(r: number) {
+  return Math.min(MAX_RATIO, Math.max(MIN_RATIO, r));
+}
+
+function loadRatio(): number {
+  try {
+    const r = Number(localStorage.getItem(SPLIT_KEY));
+    if (Number.isFinite(r) && r > 0) return clampRatio(r);
+  } catch {
+    /* A disabled store costs the user the preference, nothing more. */
+  }
+  return 0.5;
+}
 
 function EmptyState() {
   const setSheet = useApp((s) => s.setSheet);
@@ -65,15 +79,22 @@ export default function App() {
 
   const loadConnections = useApp((s) => s.loadConnections);
   const sidebarVisible = useApp((s) => s.sidebarVisible);
-  const rowPanel = useApp((s) => s.rowPanel);
-  const tab = useApp(activeTab);
-  const setActiveResult = useApp((s) => s.setActiveResult);
-  const toggleSort = useApp((s) => s.toggleSort);
+  const tabs = useApp((s) => s.tabs);
+  const activeTabId = useApp((s) => s.activeTabId);
+  const splitTabId = useApp((s) => s.splitTabId);
+  const focusedPane = useApp((s) => s.focusedPane);
+  const focusPane = useApp((s) => s.focusPane);
   const toast = useApp((s) => s.toast);
   const setToast = useApp((s) => s.setToast);
 
-  const [editorH, setEditorH] = useState(200);
-  const splitRef = useRef<{ startY: number; startH: number } | null>(null);
+  // Looked up rather than trusted: a tab can be closed out from under a pane by
+  // dropping its object or deleting its connection, and a pane pointed at
+  // nothing is one pane, not an empty half.
+  const mainTab = tabs.find((t) => t.id === activeTabId) ?? null;
+  const splitTab = tabs.find((t) => t.id === splitTabId) ?? null;
+
+  const [ratio, setRatio] = useState(loadRatio);
+  const dragRef = useRef<{ startX: number; startRatio: number } | null>(null);
   const mainRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
@@ -95,16 +116,24 @@ export default function App() {
     return () => clearTimeout(t);
   }, [toast, setToast]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(SPLIT_KEY, String(ratio));
+    } catch {
+      /* Same: the split is still where the user put it for this session. */
+    }
+  }, [ratio]);
+
   const onSplitMove = useCallback((e: PointerEvent) => {
-    const s = splitRef.current;
     const host = mainRef.current;
-    if (!s || !host) return;
-    const max = host.clientHeight - MIN_PANE;
-    setEditorH(Math.min(max, Math.max(MIN_PANE, s.startH + (e.clientY - s.startY))));
+    if (!dragRef.current || !host) return;
+    const box = host.getBoundingClientRect();
+    if (box.width === 0) return;
+    setRatio(clampRatio((e.clientX - box.left) / box.width));
   }, []);
 
   const onSplitUp = useCallback(() => {
-    splitRef.current = null;
+    dragRef.current = null;
     window.removeEventListener("pointermove", onSplitMove);
     window.removeEventListener("pointerup", onSplitUp);
   }, [onSplitMove]);
@@ -112,14 +141,21 @@ export default function App() {
   const onSplitDown = useCallback(
     (e: React.PointerEvent) => {
       e.preventDefault();
-      splitRef.current = { startY: e.clientY, startH: editorH };
+      dragRef.current = { startX: e.clientX, startRatio: ratio };
       window.addEventListener("pointermove", onSplitMove);
       window.addEventListener("pointerup", onSplitUp);
     },
-    [editorH, onSplitMove, onSplitUp],
+    [ratio, onSplitMove, onSplitUp],
   );
 
-  const result = tab?.results[tab.activeResultIndex];
+  /**
+   * Which half the keyboard is talking to.
+   *
+   * Marked only while there are two of them: a lone pane is the focused pane by
+   * definition, and a line across the top of it would say nothing.
+   */
+  const paneTone = (pane: "main" | "split") =>
+    splitTab && focusedPane === pane ? "shadow-[inset_0_1px_0_var(--color-accent)]" : "";
 
   return (
     <div className="flex h-full flex-col bg-base">
@@ -131,119 +167,48 @@ export default function App() {
         {/* `canvas`, not `base`: the chrome around this is translucent when
             window effects are on, and the grid is the one surface whose
             legibility may not depend on the desktop behind the window. */}
-        <main ref={mainRef} className="flex min-w-0 flex-1 flex-col bg-canvas">
-          {!tab ? (
-            <EmptyState />
+        <main ref={mainRef} className="flex min-w-0 flex-1 bg-canvas">
+          {!mainTab && !splitTab ? (
+            // `flex-1`, because `main` is a row now: without it the empty state
+            // is sized to its own content and sits against the sidebar instead
+            // of in the middle of the window.
+            <div className="min-w-0 flex-1">
+              <EmptyState />
+            </div>
           ) : (
             <>
-              {/* Table tabs are a view of rows, not a script. The SQL still
-                  exists on the tab so ⌘R re-runs it; there is just nothing to
-                  edit, so no editor and no splitter. */}
-              {!tab.object && (
-                <>
-                  <div style={{ height: editorH }} className="shrink-0 overflow-hidden">
-                    <SqlEditor tabId={tab.id} value={tab.sql} />
-                  </div>
-
-                  <div
-                    onPointerDown={onSplitDown}
-                    className="group relative h-px shrink-0 cursor-row-resize bg-line-soft"
-                  >
-                    <div className="absolute -top-1 h-2 w-full group-hover:bg-accent/30" />
-                  </div>
-                </>
-              )}
-
-              {tab.error && (
-                <div className="flex shrink-0 items-start gap-2 border-b border-danger/30 bg-danger/10 px-3 py-2 text-[12px]">
-                  <span className="mt-px shrink-0 font-mono text-[11px] text-danger">
-                    {tab.error.code ?? "ERR"}
-                  </span>
-                  <div className="min-w-0">
-                    <p className="text-ink">{tab.error.message}</p>
-                    {tab.error.hint && (
-                      <p className="mt-0.5 text-[11px] text-ink-muted">{tab.error.hint}</p>
-                    )}
-                  </div>
-                  {tab.error.position != null && (
-                    <button
-                      onClick={() => focusErrorPosition(tab.error!.position!)}
-                      className="ml-auto shrink-0 text-[11px] text-accent hover:underline"
-                    >
-                      Jump to position {tab.error.position}
-                    </button>
-                  )}
-                </div>
-              )}
-
-              {tab.results.length > 1 && (
-                <div className="flex shrink-0 gap-px border-b border-line-soft bg-raised px-2">
-                  {tab.results.map((r, i) => (
-                    <button
-                      key={i}
-                      onClick={() => setActiveResult(tab.id, i)}
-                      className={[
-                        "px-2.5 py-1 text-[11px]",
-                        i === tab.activeResultIndex
-                          ? "border-b-2 border-accent text-ink"
-                          : "border-b-2 border-transparent text-ink-faint hover:text-ink-muted",
-                      ].join(" ")}
-                    >
-                      Result {i + 1}
-                      <span className="ml-1.5 text-ink-faint">{r.rows.length.toLocaleString()}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              {/* Filtering is the same shape as sorting: it belongs to the
-                  rows, so it appears exactly where the rows are. */}
-              {tab.object && tab.view === "data" && hasRows(tab.object) && (
-                <FilterBar tab={tab} />
-              )}
-
-              <div className="flex min-h-0 flex-1">
-                <div className="min-w-0 flex-1">
-                  {tab.object?.kind === "diagram" ? (
-                    <ErdView tab={tab} />
-                  ) : tab.object && tab.view === "structure" ? (
-                    <StructureView tab={tab} />
-                  ) : tab.object && tab.view === "definition" ? (
-                    <DefinitionView tab={tab} />
-                  ) : result ? (
-                    <ResultGrid
-                      tabId={tab.id}
-                      result={result}
-                      sort={tab.sort}
-                      // Only table tabs can sort. A query tab runs whatever SQL
-                      // the user wrote, so sorting the fetched page would claim
-                      // an ordering the rest of the result does not have.
-                      onSort={tab.object ? (column) => toggleSort(tab.id, column) : undefined}
-                    />
-                  ) : (
-                    <div className="flex h-full items-center justify-center gap-2 text-[12px] text-ink-faint">
-                      {tab.running ? (
-                        <>
-                          <Spinner size={11} className="text-accent" label="Running" />
-                          Running…
-                        </>
-                      ) : tab.object ? (
-                        "No rows"
-                      ) : (
-                        "⌘⏎ to run"
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                {/* Only alongside rows. There is no row to show next to a
-                    structure listing or a view definition. */}
-                {rowPanel && result && (!tab.object || tab.view === "data") && (
-                  <RowPanel tab={tab} />
+              <div
+                onPointerDownCapture={() => focusPane("main")}
+                style={splitTab ? { width: `${ratio * 100}%` } : undefined}
+                className={`flex min-w-0 flex-col ${splitTab ? "shrink-0" : "flex-1"} ${paneTone("main")}`}
+              >
+                {mainTab ? (
+                  <TabPane tab={mainTab} focused={!splitTab || focusedPane === "main"} />
+                ) : (
+                  <EmptyState />
                 )}
               </div>
 
-              {tab.object ? <TableFooter tab={tab} /> : <QueryFooter tab={tab} />}
+              {splitTab && (
+                <>
+                  <div
+                    onPointerDown={onSplitDown}
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label="Resize split"
+                    className="group relative w-px shrink-0 cursor-col-resize bg-line-soft"
+                  >
+                    <div className="absolute -left-1 h-full w-2 group-hover:bg-accent/30" />
+                  </div>
+
+                  <div
+                    onPointerDownCapture={() => focusPane("split")}
+                    className={`flex min-w-0 flex-1 flex-col ${paneTone("split")}`}
+                  >
+                    <TabPane tab={splitTab} focused={focusedPane === "split"} />
+                  </div>
+                </>
+              )}
             </>
           )}
         </main>
@@ -254,6 +219,7 @@ export default function App() {
       <CellModal />
       <ConnectionSheet />
       <ExportDialog />
+      <ErrorDialog />
 
       {toast && (
         <div className="fixed right-4 bottom-9 max-w-96 rounded-md border border-line bg-overlay px-3 py-2 text-[12px] text-ink shadow-lg shadow-black/40">

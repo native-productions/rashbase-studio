@@ -11,7 +11,10 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::drivers::postgres::PgDriver;
-use crate::drivers::redis::RedisDriver;
+use crate::drivers::redis::bull::{
+    EventPage, JobPage, QueueEntry, QueuePage, RetryOutcome, RetryRequest,
+};
+use crate::drivers::redis::{RedisDriver, RedisSession};
 use crate::drivers::types::{
     ColumnInfo, ConnectionConfig, ConnectionInfo, DumpStats, ExportRequest, FunctionEntry,
     IndexInfo, KeyFilter, KeyPage, QueryResult, RowCount, SchemaEntry, SchemaGraph, TableEntry,
@@ -192,6 +195,16 @@ impl DbState {
             .await
     }
 
+    pub async fn delete_rows(
+        &self,
+        id: &str,
+        schema: &str,
+        table: &str,
+        rows: &[Vec<(String, String)>],
+    ) -> Result<u64> {
+        self.session(id).await?.delete_rows(schema, table, rows).await
+    }
+
     pub async fn list_databases(&self, id: &str) -> Result<Vec<String>> {
         self.session(id).await?.list_databases().await
     }
@@ -258,5 +271,73 @@ impl DbState {
 
     pub async fn delete_keys(&self, id: &str, keys: &[String]) -> Result<u64> {
         self.session(id).await?.delete_keys(keys).await
+    }
+
+    // -- BullMQ -------------------------------------------------------------
+
+    /// The session as the Redis one, or a refusal naming what was asked for.
+    ///
+    /// Routed by downcast rather than through the `Session` trait, because
+    /// BullMQ is one Node library's key layout rather than something databases
+    /// have. `Unsupported` is the same answer the catalogue gives when a driver
+    /// has no schemas: not a failure, just a question this connection cannot be
+    /// asked.
+    async fn redis(&self, id: &str) -> Result<Arc<dyn Session>> {
+        let session = self.session(id).await?;
+        if session.as_any().downcast_ref::<RedisSession>().is_none() {
+            return Err(Error::Unsupported("BullMQ queues"));
+        }
+        Ok(session)
+    }
+
+    pub async fn list_queues(
+        &self,
+        id: &str,
+        prefix: &str,
+        cursor: u64,
+        limit: usize,
+    ) -> Result<QueuePage> {
+        let session = self.redis(id).await?;
+        let redis = session.as_any().downcast_ref::<RedisSession>().unwrap();
+        redis.list_queues(prefix, cursor, limit).await
+    }
+
+    pub async fn queue_counts(&self, id: &str, prefix: &str, queue: &str) -> Result<QueueEntry> {
+        let session = self.redis(id).await?;
+        let redis = session.as_any().downcast_ref::<RedisSession>().unwrap();
+        redis.queue_counts(prefix, queue).await
+    }
+
+    pub async fn list_jobs(
+        &self,
+        id: &str,
+        prefix: &str,
+        queue: &str,
+        state: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<JobPage> {
+        let session = self.redis(id).await?;
+        let redis = session.as_any().downcast_ref::<RedisSession>().unwrap();
+        redis.list_jobs(prefix, queue, state, offset, limit).await
+    }
+
+    pub async fn queue_events(
+        &self,
+        id: &str,
+        prefix: &str,
+        queue: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<EventPage> {
+        let session = self.redis(id).await?;
+        let redis = session.as_any().downcast_ref::<RedisSession>().unwrap();
+        redis.queue_events(prefix, queue, after, limit).await
+    }
+
+    pub async fn retry_jobs(&self, id: &str, req: &RetryRequest) -> Result<Vec<RetryOutcome>> {
+        let session = self.redis(id).await?;
+        let redis = session.as_any().downcast_ref::<RedisSession>().unwrap();
+        redis.retry_jobs(req).await
     }
 }

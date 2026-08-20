@@ -2,6 +2,9 @@
 
 use tauri::State;
 
+use crate::drivers::redis::bull::{
+    EventPage, JobPage, QueueEntry, QueuePage, RetryOutcome, RetryRequest,
+};
 use crate::drivers::{
     ColumnInfo, DbState, FunctionEntry, IndexInfo, KeyFilter, KeyPage, RowCount, SchemaEntry,
     SchemaGraph, TableEntry,
@@ -134,4 +137,91 @@ pub async fn list_keys(
 #[tauri::command]
 pub async fn delete_keys(db: State<'_, DbState>, id: String, keys: Vec<String>) -> Result<u64> {
     db.delete_keys(&id, &keys).await
+}
+
+// ---------------------------------------------------------------------------
+// BullMQ
+//
+// Redis-only, and the registry answers `Unsupported` on any other connection.
+// The prefix travels on every call rather than being remembered per session:
+// it is a property of the application that wrote the keys, not of the server,
+// and one Redis instance can hold queues from more than one application.
+// ---------------------------------------------------------------------------
+
+/// One page of the walk for BullMQ queues under `prefix`.
+///
+/// Reports what the walk cost for the same reason `list_keys` does: finding
+/// queues means matching `<prefix>:*:meta` across the keyspace, and on an
+/// instance holding millions of session keys that is a real number the sidebar
+/// has to be able to state.
+#[tauri::command]
+pub async fn list_queues(
+    db: State<'_, DbState>,
+    id: String,
+    prefix: String,
+    cursor: u64,
+    limit: usize,
+) -> Result<QueuePage> {
+    db.list_queues(&id, &prefix, cursor, limit).await
+}
+
+/// One queue's counts, without the discovery walk.
+///
+/// What a live tab polls. Nine O(1) commands rather than the SCAN
+/// `list_queues` needs to find queues it does not yet know the names of.
+#[tauri::command]
+pub async fn queue_counts(
+    db: State<'_, DbState>,
+    id: String,
+    prefix: String,
+    queue: String,
+) -> Result<QueueEntry> {
+    db.queue_counts(&id, &prefix, &queue).await
+}
+
+/// One page of jobs in one state of one queue.
+#[tauri::command]
+pub async fn list_jobs(
+    db: State<'_, DbState>,
+    id: String,
+    prefix: String,
+    queue: String,
+    state: String,
+    offset: usize,
+    limit: usize,
+) -> Result<JobPage> {
+    db.list_jobs(&id, &prefix, &queue, &state, offset, limit)
+        .await
+}
+
+/// Everything the queue's event stream recorded since `after`.
+///
+/// `after` is the `lastId` of the previous page; absent starts from the recent
+/// end rather than from the beginning of a ten-thousand entry stream.
+#[tauri::command]
+pub async fn queue_events(
+    db: State<'_, DbState>,
+    id: String,
+    prefix: String,
+    queue: String,
+    after: Option<String>,
+    limit: usize,
+) -> Result<EventPage> {
+    db.queue_events(&id, &prefix, &queue, after.as_deref(), limit)
+        .await
+}
+
+/// Moves finished jobs back into `wait`.
+///
+/// The only BullMQ command that writes. It runs BullMQ's own `reprocessJob`
+/// script rather than a pair of hand-written commands, and it reports each job
+/// separately: a batch where some ids were already retried elsewhere is a
+/// partial result, not a failure.
+#[tauri::command]
+pub async fn retry_jobs(
+    db: State<'_, DbState>,
+    id: String,
+    req: RetryRequest,
+) -> Result<Vec<RetryOutcome>> {
+    db.retry_jobs(&id, &req).await
 }

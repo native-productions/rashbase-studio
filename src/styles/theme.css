@@ -223,6 +223,14 @@
     animation: spin 620ms linear infinite;
   }
 
+  /* A count that changed, on a surface someone watches for minutes.
+     Opacity and nothing else: a number that jumps or scales every second is
+     the one thing on screen you cannot stop looking at, and the whole point of
+     the tick is to say "this moved" without becoming the subject. */
+  .count-tick {
+    animation: fade-in 160ms var(--ease-out-quart);
+  }
+
   /* Pressable surfaces confirm they heard the click. */
   .pressable {
     transition: transform 120ms var(--ease-out-quart);
@@ -230,6 +238,12 @@
   .pressable:active {
     transform: scale(0.97);
   }
+}
+
+.beam {
+  animation-name: beam-flow;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
 }
 
 /*
@@ -257,6 +271,13 @@
 }
 @keyframes breathe {
   50% { opacity: 0.3; }
+}
+/* The queue beam. `linear`, because this is constant motion standing for a
+   measured rate rather than an entrance: any easing would make the same
+   throughput read as faster at one end of the edge than the other. The
+   duration is set per edge from the rate itself, so there is none here. */
+@keyframes beam-flow {
+  to { stroke-dashoffset: -16; }
 }
 
 .overlay-anim[data-state="open"],
@@ -290,5 +311,13 @@
      waiting, so the opacity carries it instead. */
   .spin {
     animation: breathe 1400ms ease-in-out infinite !important;
+  }
+
+  /* The beam stops travelling, and the edge keeps saying what it measured:
+     the dashes stay, drawn at the width and opacity the rate set. Removing it
+     outright would take the measurement away rather than the movement, and the
+     rate is also printed as a number beside it either way. */
+  .beam {
+    animation: none !important;
   }
 }

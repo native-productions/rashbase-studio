@@ -50,6 +50,14 @@ const keyspaceTab = (patch: Partial<QueryTab> = {}): QueryTab =>
     ...patch,
   });
 
+/** A queue tab: rows that are jobs, whose mark means retry rather than delete. */
+const queueTab = (patch: Partial<QueryTab> = {}): QueryTab =>
+  tableTab({
+    object: { schema: "emails", name: "emails", kind: "queue" },
+    staged: [],
+    ...patch,
+  });
+
 /** Every binding must be claimed exactly once, or the first one silently wins. */
 function claimants(keys: string): string[] {
   return [...COMMANDS_BY_ID.values()].filter((c) => c.keys === keys).map((c) => c.id);
@@ -166,4 +174,61 @@ test("⌘I toggles the row panel both ways", () => {
   expect(useApp.getState().rowPanel).toBe(true);
   runCommand("view.rowPanel");
   expect(useApp.getState().rowPanel).toBe(false);
+});
+
+
+/**
+ * ⌘S means one of three things and never two.
+ *
+ * Three staging gestures share the `staged` list and the same key. The failure
+ * this names is silent: a row-delete command whose `enabled` says only "not a
+ * keyspace" also answers on a queue tab, so ⌘S on staged retries would run a
+ * delete path that finds no rows and quietly clears the marks instead of
+ * retrying anything.
+ */
+test("⌘S on a queue with staged jobs retries rather than deleting rows", () => {
+  useApp.setState({
+    tabs: [
+      queueTab({
+        staged: ["7"],
+        queue: { state: "failed", diagram: null, counts: null, jobs: null } as never,
+      }),
+    ],
+    activeTabId: "tab-1",
+    splitTabId: null,
+    focusedPane: "main",
+  });
+
+  expect(COMMANDS_BY_ID.get("rows.commitStaged")?.enabled?.()).toBe(false);
+  expect(COMMANDS_BY_ID.get("rows.clearStaged")?.enabled?.()).toBe(false);
+});
+
+test("⌘S on a keyspace with staged keys deletes keys rather than rows", () => {
+  useApp.setState({
+    tabs: [keyspaceTab({ staged: ["nvp:na:1"] })],
+    activeTabId: "tab-1",
+    splitTabId: null,
+    focusedPane: "main",
+  });
+
+  expect(COMMANDS_BY_ID.get("keys.commitStaged")?.enabled?.()).toBe(true);
+  expect(COMMANDS_BY_ID.get("rows.commitStaged")?.enabled?.()).toBe(false);
+});
+
+test("a table row can only be staged once its primary key is known", () => {
+  const columns = [
+    { name: "id", dataType: "text", notNull: true, default: null, primaryKey: true, comment: null },
+  ];
+
+  // The definition has not arrived yet, so no row can be named.
+  useApp.setState({
+    tabs: [tableTab({ staged: ["whatever"], columns: null })],
+    activeTabId: "tab-1",
+    splitTabId: null,
+    focusedPane: "main",
+  });
+  expect(COMMANDS_BY_ID.get("rows.commitStaged")?.enabled?.()).toBe(false);
+
+  useApp.setState({ tabs: [tableTab({ staged: ["whatever"], columns })] });
+  expect(COMMANDS_BY_ID.get("rows.commitStaged")?.enabled?.()).toBe(true);
 });

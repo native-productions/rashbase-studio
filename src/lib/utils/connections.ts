@@ -46,6 +46,40 @@ export function tildePath(path: string, home: string): string {
 export const isServerOnly = (c: ConnectionConfig): boolean => c.database.trim() === "";
 
 /**
+ * The server a connection belongs to: itself, or the server it was derived
+ * from. `openDatabase` never chains deeper than one level, so this is the whole
+ * ancestry.
+ */
+export const rootOf = (c: ConnectionConfig): string => c.parentId ?? c.id;
+
+/**
+ * The other databases open on the same server as `targetId`.
+ *
+ * One database at a time per server: opening a second one closes the first, so
+ * the sidebar never shows two live dots under one server and no query can land
+ * on a database the user has stopped looking at.
+ *
+ * The server's own session is excluded. It is not a database anyone is working
+ * in — it is what lists the databases — and closing it would make going back to
+ * the server row cost a reconnect. Other servers are excluded for the same
+ * reason: a local Postgres and a production replica are held open on purpose.
+ */
+export function siblingSessions(
+  connections: ConnectionConfig[],
+  openIds: string[],
+  targetId: string,
+): string[] {
+  const target = connections.find((c) => c.id === targetId);
+  if (!target) return [];
+  const root = rootOf(target);
+  return openIds.filter((id) => {
+    if (id === targetId || id === root) return false;
+    const c = connections.find((o) => o.id === id);
+    return !!c && rootOf(c) === root;
+  });
+}
+
+/**
  * Servers first, each followed by the databases picked off it.
  *
  * A dozen databases listed flat beside the servers they came from reads as a

@@ -9,6 +9,9 @@ use async_trait::async_trait;
 use redis::aio::MultiplexedConnection;
 use tokio::sync::Mutex;
 
+use crate::drivers::redis::bull::{
+    self, EventPage, JobPage, QueueEntry, QueuePage, RetryOutcome, RetryRequest,
+};
 use crate::drivers::redis::command;
 use crate::drivers::redis::keyspace;
 use crate::drivers::types::{ConnectionInfo, KeyFilter, KeyPage, QueryResult};
@@ -68,6 +71,50 @@ impl RedisSession {
             .as_mut()
             .ok_or_else(|| Error::UnknownConnection(self.info.id.clone()))
     }
+
+    // -- BullMQ -------------------------------------------------------------
+    //
+    // Inherent rather than on `Session`, and reached through `as_any`. BullMQ
+    // is a key layout one Node library writes into Redis, not a thing databases
+    // have, so these do not belong on the trait Postgres also implements.
+
+    pub async fn list_queues(&self, prefix: &str, cursor: u64, limit: usize) -> Result<QueuePage> {
+        let mut guard = self.conn.lock().await;
+        bull::list_queues(self.live(&mut guard)?, prefix, cursor, limit).await
+    }
+
+    pub async fn queue_counts(&self, prefix: &str, queue: &str) -> Result<QueueEntry> {
+        let mut guard = self.conn.lock().await;
+        bull::queue_counts(self.live(&mut guard)?, prefix, queue).await
+    }
+
+    pub async fn list_jobs(
+        &self,
+        prefix: &str,
+        queue: &str,
+        state: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<JobPage> {
+        let mut guard = self.conn.lock().await;
+        bull::list_jobs(self.live(&mut guard)?, prefix, queue, state, offset, limit).await
+    }
+
+    pub async fn queue_events(
+        &self,
+        prefix: &str,
+        queue: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<EventPage> {
+        let mut guard = self.conn.lock().await;
+        bull::queue_events(self.live(&mut guard)?, prefix, queue, after, limit).await
+    }
+
+    pub async fn retry_jobs(&self, req: &RetryRequest) -> Result<Vec<RetryOutcome>> {
+        let mut guard = self.conn.lock().await;
+        bull::retry_jobs(self.live(&mut guard)?, req).await
+    }
 }
 
 /// Pulls one `field:value` line out of an INFO section.
@@ -85,6 +132,10 @@ fn info_field(blob: &str, field: &str) -> Option<String> {
 impl Session for RedisSession {
     fn info(&self) -> &ConnectionInfo {
         &self.info
+    }
+
+    fn as_any(&self) -> &(dyn std::any::Any + Send + Sync) {
+        self
     }
 
     async fn close(&self) -> Result<()> {
