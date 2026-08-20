@@ -543,6 +543,31 @@ resolves the secret.
 Connect, browse schema, run queries, read results, filter and sort a table,
 read one row in the side panel, and edit cells inline.
 
+The SQL editor knows the difference between a keyword, a table and a column.
+Keywords are the accent and bold; a relation name takes its own colour, worked
+out from where the identifier sits rather than from a list of names, so a column
+called `users` stays a column. Keyword completions answer in the case being
+typed, so accepting one never rewrites `SELECT` as `select`.
+
+Completion reads the connected schema at the two places where that is a real
+question. After `join`, the list is built from the schema's own foreign keys —
+picking `orders` under `select * from users u` writes
+`orders ON orders.user_id = u.id`, both directions of a key are offered, and a
+composite key joins on every column pair. After `where` — or `and`, `on`,
+`select`, `order by` — it is the columns of whatever the statement has already
+named, with their types, qualified by alias once there is more than one table
+in scope. Both stay quiet until the statement names a relation, because until
+then the answer is the whole database.
+
+`⌘S` on a query tab keeps the statement. It appears as a chip under the editor,
+named after the statement itself unless a name is typed into the field that
+opens with it; the five most recent are shown and the rest are behind
+`View all`. Clicking a chip loads it into the current tab when that tab has
+nothing unsaved to lose, and into a new tab when it does — and the tab
+remembers which query it came from, so a dot on the chip says the editor has
+moved on from what is saved and `⌘S` updates that query rather than keeping a
+near-identical second copy. `⇧⌘S` is the way to keep both.
+
 On Redis: browse the keyspace, filter by key prefix, key glob (`nvp:na:*`) or
 value contents, read a key in the side panel with its value as a JSON tree, edit
 a string or a hash field, edit or clear a TTL, stage keys for deletion and

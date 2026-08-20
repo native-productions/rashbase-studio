@@ -499,6 +499,19 @@ export interface QueryTab {
   selection: { row: number; col: number } | null;
   /** Source of a view or function, fetched the first time it is looked at. */
   definition: string | null;
+  /**
+   * The saved query this tab is showing, when it came from one.
+   *
+   * What makes ⌘S mean "update this" rather than "keep another copy of it".
+   * The link survives editing on purpose — a statement being changed is still
+   * the statement you opened — so the difference between saved and edited is
+   * `sql` against the saved copy, not the presence of the link.
+   *
+   * Not persisted with the pin. A saved query can be deleted between launches,
+   * and a pinned tab claiming to be one that no longer exists would offer to
+   * update nothing.
+   */
+  savedQueryId: string | null;
   sql: string;
   results: QueryResult[];
   activeResultIndex: number;

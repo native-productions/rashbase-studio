@@ -100,6 +100,16 @@
   --color-danger: var(--t-danger);
   --color-on-danger: var(--t-on-danger);
   --color-warn: var(--t-warn);
+  /* A relation name in the editor: `users` in `select * from users`.
+
+     Its own hue rather than a reuse. Every other semantic token already means
+     something inside a statement — `num` and `str` are literals, `bool` is a
+     cast type, `accent` is a keyword — so borrowing one would make two
+     different things the same colour on the same line, which is the exact
+     question this token exists to answer. Rose is the one gap left between
+     the accent at 88 and the string green at 145 that is not read as an
+     error: `danger` sits at 25 and only ever appears as error text. */
+  --color-relation: var(--t-relation);
 
   /* The scrollbar. Its own pair rather than a line token: it is a control
      sitting on whatever surface scrolls, and on light it has to be darker than
@@ -171,6 +181,7 @@
   --t-num: oklch(0.73 0.085 200);
   --t-str: oklch(0.75 0.075 145);
   --t-bool: oklch(0.73 0.085 300);
+  --t-relation: oklch(0.76 0.09 350);
   --t-null: oklch(0.45 0.02 90);
   --t-danger: oklch(0.61 0.15 25);
   --t-on-danger: oklch(0.145 0.008 90);
@@ -245,6 +256,9 @@
   --t-num: oklch(0.50 0.12 235);
   --t-str: oklch(0.46 0.11 150);
   --t-bool: oklch(0.48 0.15 300);
+  /* Down and out, the same trade the three above make: at the lightness that
+     reads as rose on paper it is 2.5:1, which is not a word. */
+  --t-relation: oklch(0.50 0.15 352);
   /* Recessive means lighter here, not darker. NULL still has to be the thing
      the eye skips. */
   --t-null: oklch(0.68 0.015 90);
@@ -298,6 +312,7 @@
   --color-num: var(--t-num);
   --color-str: var(--t-str);
   --color-bool: var(--t-bool);
+  --color-relation: var(--t-relation);
   --color-null: var(--t-null);
   --color-danger: var(--t-danger);
   --color-on-danger: var(--t-on-danger);
@@ -384,8 +399,38 @@
   }
 
   input,
-  textarea {
+  textarea,
+  /*
+    CodeMirror's editable surface, which the `input, textarea` pair does not
+    reach: it is a `contenteditable` div, and CodeMirror sets neither property
+    itself — it relies on the browser's own default for editable content, which
+    is exactly what `body` above overrode by inheritance.
+
+    In a WebKit webview `user-select: none` on editable content does not only
+    stop selection. It stops a click from placing the caret where the pointer
+    is, which is the failure that looks like the editor ignoring where you
+    clicked. The arrow pointer over a document you can type into is the same
+    rule showing up somewhere it can be seen.
+  */
+  .cm-content {
     user-select: text;
+  }
+
+  /*
+    An I-beam wherever there is text to put a caret in. The empty space under
+    the last line counts — clicking it puts the caret at the end of the
+    document, and the pointer has to say so. A line number does not: it is a
+    label, and the gutter is the one part of the editor that is not the text.
+  */
+  textarea,
+  input:not([type="button"], [type="radio"], [type="checkbox"], [type="range"]),
+  .cm-content,
+  .cm-scroller {
+    cursor: text;
+  }
+
+  .cm-gutters {
+    cursor: default;
   }
 
   /* A port is typed, never stepped. The spinner is two more pixels of chrome in

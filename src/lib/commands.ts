@@ -136,6 +136,41 @@ export const COMMANDS: Command[] = [
       if (tab) void s().commitRetry(tab.id, false);
     },
   },
+  // Last of the four ⌘S commands, and the only one that is not a confirmation.
+  // The three above are enabled only on an object tab with something staged,
+  // which a query tab can never be, so the keyboard layer reaches this one
+  // exactly when there is nothing more urgent for the key to mean.
+  {
+    id: "query.save",
+    label: "Save query",
+    group: "Query",
+    keys: "⌘S",
+    enabled: () => {
+      const tab = activeTab(s());
+      return !!tab && !tab.object && !!tab.connectionId && tab.sql.trim().length > 0;
+    },
+    run: () => {
+      const tab = activeTab(s());
+      if (tab) s().saveQuery(tab.id);
+    },
+  },
+  // The way out of the link ⌘S creates. Without it a query opened from a chip
+  // can only ever be overwritten, and "keep both" would mean copying the text
+  // into a new tab by hand.
+  {
+    id: "query.saveAsNew",
+    label: "Save query as new",
+    group: "Query",
+    keys: "⇧⌘S",
+    enabled: () => {
+      const tab = activeTab(s());
+      return !!tab && !tab.object && !!tab.savedQueryId && tab.sql.trim().length > 0;
+    },
+    run: () => {
+      const tab = activeTab(s());
+      if (tab) s().saveQueryAsNew(tab.id);
+    },
+  },
   {
     id: "queue.retryReset",
     label: "Retry staged jobs and reset attempts",

@@ -7,6 +7,7 @@ import { RowPanel } from "@/components/grid/RowPanel";
 import { FilterBar } from "@/components/table/FilterBar";
 import { TableFooter } from "@/components/table/TableFooter";
 import { QueryFooter } from "@/components/query/QueryFooter";
+import { SavedQueryBar } from "@/components/query/SavedQueryBar";
 import { StructureView } from "@/components/table/StructureView";
 import { ErdView } from "@/components/erd/ErdView";
 import { QueueView } from "@/components/queue/QueueView";
@@ -77,6 +78,12 @@ export function TabPane({ tab, focused }: { tab: QueryTab; focused: boolean }) {
           >
             <div className="absolute -top-1 h-2 w-full group-hover:bg-accent/30" />
           </div>
+
+          {/* Under the editor rather than over it: a saved statement is
+              something you reach for on the way to running it, and the shelf
+              must not push the first line of SQL down the screen every time a
+              connection has one. */}
+          {tab.connectionId && <SavedQueryBar tab={tab} connectionId={tab.connectionId} />}
         </>
       )}
 

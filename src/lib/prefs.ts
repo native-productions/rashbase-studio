@@ -29,6 +29,11 @@ export interface Prefs {
    * widths measured in JS. The cost is that the titlebar has to cancel it out —
    * see `Titlebar.tsx` — so each step is a number that has been checked against
    * the traffic lights, not an arbitrary one.
+   *
+   * The SQL editor cancels it too, for a different reason: under `zoom` WebKit
+   * reports element geometry and pointer coordinates in two different spaces,
+   * and a click lands several characters from where it was aimed. `DESIGN.md`
+   * has the measurements.
    */
   fontScale: number;
   tabBehaviour: TabBehaviour;

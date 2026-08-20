@@ -132,9 +132,34 @@ with the one colour that means "focus".
 | number | `--color-num` | right-aligned, tabular numerals |
 | string / json / array | `--color-str` | left-aligned |
 | bool | `--color-bool` | |
+| relation name | `--color-relation` | editor only, see below |
 | temporal / uuid | `--color-ink-muted` | |
 | NULL | `--color-null` | italic, deliberately recessive |
 | error | `--color-danger` | |
+
+### The editor's three kinds of identifier
+
+`select id from users u` holds a keyword, a column, a table and an alias, and
+the SQL grammar reports three of those as the same token. Position is the only
+thing that separates them, so `lib/utils/sqlSyntax.ts` works out which
+identifiers sit where a relation can sit and the editor paints those.
+
+| Part | Colour | Weight |
+|---|---|---|
+| Keyword | `--color-accent` | 600 |
+| Relation name | `--color-relation` | 400 |
+| Column, alias, everything else | `--color-ink` | 400 |
+
+`--color-relation` is a rose, and its own hue rather than a borrowed one. Every
+other semantic token already means something inside a statement — `num` and
+`str` are literals, `bool` is a cast type, the accent is a keyword — so reusing
+one would put two different things in the same colour on the same line, which
+is the question the token exists to answer. Rose is the gap left between the
+accent at hue 88 and the string green at 145 that is not read as an error:
+`danger` sits at 25 and only ever appears as error text.
+
+The accent is not available for this. It already carries five things, and "the
+name of a table" is not one of them.
 
 `TypeClass` is assigned in `src-tauri/src/drivers/postgres/types.rs::classify`
 from the Postgres type name and travels with every column, so the grid never has
@@ -271,6 +296,41 @@ defines for dark mode — selection, caret, active line, active-line gutter,
 gutters, tooltip — loses on specificity no matter how long a selector we write,
 and silently renders in CodeMirror's palette instead of ours. Marking those
 declarations is the only way to hold them. Do not remove them as tidying.
+
+### The editor cancels the root zoom
+
+The text size preference is `zoom` on `html`, for the reason `prefs.ts` gives:
+every text size in this app is a hardcoded px while every spacing utility is
+rem, so scaling the root font-size would move the padding and leave the text.
+
+In WebKit, which is the webview on macOS, `zoom` splits the page into two
+coordinate systems. `getBoundingClientRect` answers in unzoomed layout pixels;
+a pointer event reports itself in zoomed viewport pixels. Anything that maps a
+click onto text by asking the browser where that text is — which is what a code
+editor does on every click — gets two different answers and lands between them.
+Measured on a 45-character line: five characters off at `zoom: 0.9`, twelve at
+`1.3`, and exact at `1`, which is why it was invisible on the default.
+
+So the editor takes itself out of the zoom, the same way the titlebar does, and
+scales its own type instead:
+
+```
+"&": {
+  zoom: "calc(1 / var(--ui-scale, 1))",
+  fontSize: "calc(12px * var(--ui-scale, 1))",
+}
+```
+
+Inside that subtree the net zoom is 1 and the two answers are the same one. The
+cost is that every size in the editor theme which should follow the preference
+has to carry the multiplier — the tooltip and the completion detail do. `height`
+must not: a percentage is resolved after the element's own zoom, so `100%`
+already lands on the pane and a correction scales it twice.
+
+The editor is also the surface `body`'s `user-select: none` had to be lifted
+from. CodeMirror sets neither `user-select` nor `cursor`; it inherits the
+browser's defaults for editable content, and those are exactly what the base
+rule overrode. The opt-in is in `theme.css`, beside `input` and `textarea`.
 
 Rules that hold everywhere:
 

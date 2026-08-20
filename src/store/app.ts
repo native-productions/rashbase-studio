@@ -10,6 +10,12 @@ import {
 } from "@/lib/utils/sql";
 import { asDbError } from "@/lib/utils/errors";
 import { loadPinnedTabs, savePinnedTabs } from "@/lib/pinnedTabs";
+import {
+  defaultName,
+  loadSavedQueries,
+  saveSavedQueries,
+  type SavedQuery,
+} from "@/lib/savedQueries";
 import { applyTranslucency, loadTranslucency, saveTranslucency } from "@/lib/translucency";
 import { applyPrefs, loadPrefs, savePrefs, type Prefs } from "@/lib/prefs";
 import { biometricSupport, DEFAULT_POLICY, type BiometricSupport } from "@/lib/security";
@@ -55,6 +61,7 @@ import type {
   QueueEntry,
   QueryTab,
   SchemaEntry,
+  SchemaGraph,
   SecurityPolicy,
   Sort,
   TableEntry,
@@ -97,6 +104,7 @@ function newTab(connectionId: string | null, object: DbObject | null = null): Qu
     columns: null,
     indexes: null,
     graph: null,
+    savedQueryId: null,
     queue:
       object?.kind === "queue"
         ? {
@@ -155,6 +163,28 @@ interface AppState {
   tables: Record<string, TableEntry[]>;
   functions: Record<string, FunctionEntry[]>;
   expandedSchemas: Record<string, boolean>;
+  /**
+   * Schema graphs, keyed `connectionId::schema`.
+   *
+   * Beside `tab.graph` rather than instead of it, and the difference is what
+   * forgets them. A diagram tab's copy dies with the tab, which is right for
+   * something drawn once and panned around. The editor's foreign-key
+   * completion asks on every `join` in every tab, so its copy lives as long as
+   * the connection does.
+   */
+  graphs: Record<string, SchemaGraph>;
+
+  /** The user's saved statements, every connection's, newest last. */
+  savedQueries: SavedQuery[];
+  /**
+   * The chip whose name is being typed, or null.
+   *
+   * ⌘S saves and opens the field in one move rather than asking first: the
+   * name is optional, and a prompt in front of every save would cost more than
+   * the statement is worth. Held in the store because the command that starts
+   * the rename and the bar that draws the field are not the same component.
+   */
+  renamingQueryId: string | null;
 
   tabs: QueryTab[];
   activeTabId: string | null;
@@ -385,6 +415,41 @@ interface AppState {
   setTabView: (tabId: string, view: QueryTab["view"]) => Promise<void>;
   /** Fetches a diagram tab's schema graph. No-op on any other kind of tab. */
   loadSchemaGraph: (tabId: string) => Promise<void>;
+  /**
+   * Reads a schema's tables, columns and foreign keys, once per connection and
+   * schema.
+   *
+   * Answers the graph rather than writing it somewhere the caller has to go and
+   * read, because the caller is a completion source that is already awaiting.
+   * Null means the read failed, which the popup shows as no suggestions rather
+   * than as an error over the editor.
+   */
+  ensureGraph: (connectionId: string, schema: string) => Promise<SchemaGraph | null>;
+
+  /**
+   * Keeps the tab's statement.
+   *
+   * An update when the tab is already showing a saved query, and a new one
+   * otherwise. A tab that came from a chip and was then edited is still that
+   * query, so ⌘S there means "this is what it should say" — offering to make a
+   * second copy is how a shelf fills up with four nearly identical statements
+   * and no way to tell which one is current.
+   */
+  saveQuery: (tabId: string) => void;
+  /** Keeps the tab's statement as a separate query, link or no link. */
+  saveQueryAsNew: (tabId: string) => void;
+  renameSavedQuery: (id: string, name: string) => void;
+  deleteSavedQuery: (id: string) => void;
+  /** Opens or closes the inline name field on one chip. */
+  setRenamingQuery: (id: string | null) => void;
+  /**
+   * Puts a saved statement in front of the user.
+   *
+   * Into the current tab when that tab has nothing of its own to lose,
+   * otherwise into a new one: replacing an unsaved statement to show a saved
+   * one would be a write nobody asked for.
+   */
+  openSavedQuery: (id: string) => void;
 
   setSelection: (tabId: string, selection: QueryTab["selection"]) => void;
   selectCell: (tabId: string, row: number, col: number) => void;
@@ -705,6 +770,9 @@ export const useApp = create<AppState>((set, get) => {
   tables: {},
   functions: {},
   expandedSchemas: {},
+  graphs: {},
+  savedQueries: loadSavedQueries(),
+  renamingQueryId: null,
   tabs: [],
   activeTabId: null,
   splitTabId: null,
@@ -880,6 +948,7 @@ export const useApp = create<AppState>((set, get) => {
         tables: forgetting(s.tables, gone),
         functions: forgetting(s.functions, gone),
         expandedSchemas: forgetting(s.expandedSchemas, gone),
+        graphs: forgetting(s.graphs, gone),
         tabs,
         activeTabId: tabs.some((t) => t.id === s.activeTabId)
           ? s.activeTabId
@@ -1271,6 +1340,118 @@ export const useApp = create<AppState>((set, get) => {
     } catch (e) {
       set({ toast: { kind: "error", text: asDbError(e).message } });
     }
+  },
+
+  ensureGraph: async (connectionId, schema) => {
+    const key = tableKey(connectionId, schema);
+    const cached = get().graphs[key];
+    if (cached) return cached;
+    try {
+      const graph = await ipc.schemaGraph(connectionId, schema);
+      set((s) => ({ graphs: { ...s.graphs, [key]: graph } }));
+      return graph;
+    } catch {
+      // Silent on purpose. This runs behind a completion popup the user did
+      // not ask for; a toast over the editor for a schema that could not be
+      // read would interrupt the typing it was meant to help.
+      return null;
+    }
+  },
+
+  saveQuery: (tabId) => {
+    const tab = get().tabs.find((t) => t.id === tabId);
+    if (!tab || !tab.connectionId || !tab.sql.trim()) return;
+
+    // Updating in place, so no chip appears and no name field opens: the only
+    // thing that changed is that the chip stopped being marked as edited, and
+    // that is the whole report.
+    const linked = get().savedQueries.find((q) => q.id === tab.savedQueryId);
+    if (linked) {
+      set((s) => {
+        const savedQueries = s.savedQueries.map((q) =>
+          q.id === linked.id ? { ...q, sql: tab.sql, savedAt: Date.now() } : q,
+        );
+        saveSavedQueries(savedQueries);
+        return { savedQueries };
+      });
+      return;
+    }
+
+    get().saveQueryAsNew(tabId);
+  },
+
+  saveQueryAsNew: (tabId) => {
+    const tab = get().tabs.find((t) => t.id === tabId);
+    if (!tab || !tab.connectionId || !tab.sql.trim()) return;
+    const query: SavedQuery = {
+      id: crypto.randomUUID(),
+      connectionId: tab.connectionId,
+      name: defaultName(tab.sql),
+      sql: tab.sql,
+      savedAt: Date.now(),
+    };
+    set((s) => {
+      const savedQueries = [...s.savedQueries, query];
+      saveSavedQueries(savedQueries);
+      return {
+        savedQueries,
+        renamingQueryId: query.id,
+        tabs: s.tabs.map((t) => (t.id === tabId ? { ...t, savedQueryId: query.id } : t)),
+      };
+    });
+  },
+
+  renameSavedQuery: (id, name) =>
+    set((s) => {
+      const trimmed = name.trim();
+      const savedQueries = s.savedQueries.map((q) =>
+        // An emptied field means "I did not want to name it", not "name it
+        // nothing", so the default stands.
+        q.id === id ? { ...q, name: trimmed || defaultName(q.sql) } : q,
+      );
+      saveSavedQueries(savedQueries);
+      return { savedQueries, renamingQueryId: null };
+    }),
+
+  deleteSavedQuery: (id) =>
+    set((s) => {
+      const savedQueries = s.savedQueries.filter((q) => q.id !== id);
+      saveSavedQueries(savedQueries);
+      return {
+        savedQueries,
+        renamingQueryId: s.renamingQueryId === id ? null : s.renamingQueryId,
+        // The statement stays in the tab; only the claim that it is a saved
+        // one goes. Otherwise ⌘S there would update a query that is gone.
+        tabs: s.tabs.map((t) => (t.savedQueryId === id ? { ...t, savedQueryId: null } : t)),
+      };
+    }),
+
+  setRenamingQuery: (id) => set({ renamingQueryId: id }),
+
+  openSavedQuery: (id) => {
+    const query = get().savedQueries.find((q) => q.id === id);
+    if (!query) return;
+    const tab = activeTab(get());
+    // Reusable when the tab holds nothing the user would miss: empty, or
+    // already showing something that is itself saved.
+    const reusable =
+      tab &&
+      !tab.object &&
+      tab.connectionId === query.connectionId &&
+      // Empty, or holding a saved statement unchanged. An edited saved query
+      // has unsaved work in it exactly like an unsaved one does.
+      (!tab.sql.trim() ||
+        get().savedQueries.some((q) => q.id === tab.savedQueryId && q.sql === tab.sql));
+    if (reusable) {
+      get().setTabSql(tab.id, query.sql);
+      set((s) => ({
+        tabs: s.tabs.map((t) => (t.id === tab.id ? { ...t, savedQueryId: query.id } : t)),
+      }));
+      return;
+    }
+    const fresh = { ...newTab(query.connectionId), sql: query.sql, savedQueryId: query.id };
+    set((s) => ({ tabs: [...s.tabs, fresh] }));
+    showTab(fresh.id);
   },
 
   closeTab: (id) => {
