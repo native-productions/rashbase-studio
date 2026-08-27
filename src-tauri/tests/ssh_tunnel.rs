@@ -52,6 +52,7 @@ fn env_config() -> Option<(ConnectionConfig, String, Option<String>)> {
             ssl_mode: SslMode::Prefer,
             environment: None,
             parent_id: None,
+        require_biometric: false,
             ssh: Some(SshConfig {
                 host: ssh_host,
                 port: var("RASHBASE_SSH_PORT", "22").parse().unwrap_or(22),

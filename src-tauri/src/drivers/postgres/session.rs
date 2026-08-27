@@ -18,13 +18,14 @@ use tokio::sync::Mutex;
 
 use crate::drivers::postgres::catalog;
 use crate::drivers::postgres::dump;
+use crate::drivers::postgres::restore;
 use crate::drivers::postgres::sql::{build_delete, build_update};
 use crate::drivers::postgres::types::classify;
 use crate::drivers::types::{
-    ColumnInfo, ColumnMeta, ConnectionInfo, DumpStats, ExportRequest, FunctionEntry, IndexInfo,
-    QueryResult, RowCount, SchemaEntry, SchemaGraph, TableEntry,
+    ColumnInfo, ColumnMeta, ConnectionInfo, DumpStats, ExportRequest, FunctionEntry, ImportRequest,
+    ImportStats, IndexInfo, QueryResult, RowCount, SchemaEntry, SchemaGraph, TableEntry,
 };
-use crate::drivers::{DumpWriter, Session};
+use crate::drivers::{DumpWriter, ImportProgress, Session};
 use crate::error::{Error, Result};
 
 pub struct PgSession {
@@ -219,6 +220,28 @@ impl Session for PgSession {
         let result = dump::run(&mut conn, req, out, cancel).await;
         // Best effort: the export's own outcome is what the user is waiting on,
         // and a socket that fails to close politely still closes.
+        let _ = conn.close().await;
+        result
+    }
+
+    /// Runs a file of statements, on a connection of its own.
+    ///
+    /// The same bargain `dump` makes, and for the same reason: a file of two
+    /// million rows takes minutes, and running it on the session's connection
+    /// would wedge every tab pointed at this database for the whole of it.
+    ///
+    /// It is also the more correct place. The transaction, the `SET LOCAL` that
+    /// holds the foreign keys and every `SET` the file carries belong to the
+    /// import and nothing else — leaking them into the tab the user is typing
+    /// in is exactly what invariant 6 exists to prevent in the other direction.
+    async fn import(
+        &self,
+        req: &ImportRequest,
+        cancel: &AtomicBool,
+        progress: &mut dyn ImportProgress,
+    ) -> Result<ImportStats> {
+        let mut conn = PgConnection::connect_with(&self.options).await?;
+        let result = restore::import(&mut conn, req, cancel, progress).await;
         let _ = conn.close().await;
         result
     }

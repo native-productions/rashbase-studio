@@ -83,6 +83,7 @@ fn env_config() -> Option<(ConnectionConfig, String)> {
             ssl_mode: SslMode::Prefer,
             environment: Some("local".into()),
             parent_id: None,
+        require_biometric: false,
             // These gates run against a database they can reach directly.
             ssh: None,
         },

@@ -46,6 +46,8 @@ pub struct Capabilities {
     pub cancel: bool,
     /// Whether relations can be dumped to a file.
     pub export: bool,
+    /// Whether a file of statements can be run back into the database.
+    pub import: bool,
     /// Whether this driver has a flat key namespace to walk instead of tables.
     /// True and `schemas` false is what a key-value store looks like from here.
     pub keyspace: bool,
@@ -70,6 +72,17 @@ pub trait DumpWriter: Send {
     /// Reports which relation is being written and how far along the set is.
     /// Advisory: a writer that shows nothing may ignore it.
     fn progress(&mut self, table: &str, done: usize, total: usize);
+}
+
+/// How an import says where it has got to.
+///
+/// Statements rather than rows, and bytes alongside them, because those are the
+/// two numbers the user can hold against something they already know: the count
+/// the preflight showed them, and the size of the file on disk. Advisory, like
+/// `DumpWriter::progress` — a window that has gone away is not a reason to fail
+/// an import that is otherwise applying fine.
+pub trait ImportProgress: Send {
+    fn tick(&mut self, statements: usize, bytes: u64, table: &str);
 }
 
 /// A kind of database. One value per supported server, held in the registry.
@@ -145,6 +158,25 @@ pub trait Session: Send + Sync {
         _cancel: &AtomicBool,
     ) -> Result<DumpStats> {
         Err(Error::Unsupported("exporting"))
+    }
+
+    /// Runs a file of statements against this session's own connection.
+    ///
+    /// The session's connection and not a fresh one, for the reason
+    /// `PgSession` gives: the transaction, the deferral and every `SET` the
+    /// file carries have to survive from one statement to the next, and a pool
+    /// would hand out a different backend halfway through.
+    ///
+    /// `cancel` is polled between statements. A driver that observes it set
+    /// must roll back and return `Error::Cancelled`: a half-applied file is the
+    /// outcome this whole path exists to rule out.
+    async fn import(
+        &self,
+        _req: &ImportRequest,
+        _cancel: &AtomicBool,
+        _progress: &mut dyn ImportProgress,
+    ) -> Result<ImportStats> {
+        Err(Error::Unsupported("importing"))
     }
 
     async fn update_cell(

@@ -23,12 +23,19 @@ session — telling those two apart at a glance is a safety feature.
 
 ```sh
 bun install
-bun run tauri dev          # full app
+bun run app                # full app, as a development build
 bun run dev                # frontend only, port 1420
 bun run build              # tsc --noEmit && vite build
 bun test                   # frontend tests, src/__tests__/
 cd src-tauri && cargo test  # backend tests
 ```
+
+`bun run app` is `tauri dev` with `src-tauri/tauri.dev.conf.json5` merged over
+the config, which changes `identifier` and nothing else. That identifier decides
+`app_config_dir()`, so a development build keeps its own `connections.json`,
+`security.json` and `dev-credentials.json` instead of writing into the ones an
+installed copy of the app is using. Plain `bun run tauri dev` still works and
+still shares them; use it only when that is what you want.
 
 There is no linter or formatter configured. `tsc` is strict, with
 `noUnusedLocals`, `noUnusedParameters`, `noUncheckedIndexedAccess` and

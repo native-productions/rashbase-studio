@@ -611,10 +611,16 @@ export function ConnectionSheet() {
               </button>
             )}
 
+            {/* Wraps rather than truncating. This is now the only place a
+                refused connection is reported, and `password authentication
+                failed f…` is the server's words paraphrased by omission —
+                which is the one thing an error in this app may not do. Bounded
+                at three lines so a long `DETAIL` cannot walk the buttons down
+                the screen, with the full text still on the title. */}
             <p
               className={[
-                "min-w-0 flex-1 truncate text-[11px]",
-                error ? "text-danger" : "text-ink-muted",
+                "line-clamp-3 min-w-0 flex-1 text-[11px] leading-snug",
+                error ? "text-danger select-text" : "text-ink-muted",
               ].join(" ")}
               title={error ?? tested ?? undefined}
             >

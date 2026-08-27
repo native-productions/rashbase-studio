@@ -60,6 +60,7 @@ fn env_config() -> Option<ConnectionConfig> {
         ssl_mode: SslMode::Disable,
         environment: Some("local".into()),
         parent_id: None,
+        require_biometric: false,
         ssh: None,
     })
 }

@@ -325,8 +325,23 @@ function ObjectRow({
  * and would leave the gesture unreachable on all of them. With more than one
  * schema the entry becomes a submenu, because then there is a question to
  * answer and the menu is where to answer it.
+ *
+ * A derived row under a server is a database — `nestConnections` puts each one
+ * under the server it was picked off — so this is also the menu for a database,
+ * and export and import belong on it for that reason.
+ *
+ * `active` decides whether the shortcuts are shown, and it has to. Both
+ * commands act on the *active* connection; this menu acts on the row that was
+ * right-clicked, and right-clicking does not make a row active. On any other
+ * row the hint would name a key that runs the same action against a different
+ * database, which is worse than advertising one that does nothing.
  */
-function connectionMenuItems(live: boolean, schemas: SchemaEntry[]): ContextMenuItem[] {
+function connectionMenuItems(
+  live: boolean,
+  active: boolean,
+  keyspace: boolean,
+  schemas: SchemaEntry[],
+): ContextMenuItem[] {
   const diagram: ContextMenuItem[] = !live
     ? []
     : schemas.length === 1
@@ -345,10 +360,45 @@ function connectionMenuItems(live: boolean, schemas: SchemaEntry[]): ContextMenu
         : [];
 
   return [
+    // First, and not gated on a live connection: editing is what a
+    // double-click on the row already does, and this is the second door to it.
+    // A connection that will not connect is exactly the one worth editing.
+    { kind: "item", id: "edit", label: "Edit connection…" },
+    { kind: "separator" },
     ...diagram,
     ...(diagram.length > 0 ? ([{ kind: "separator" }] as ContextMenuItem[]) : []),
-    ...(live ? ([{ kind: "item", id: "disconnect", label: "Disconnect" }] as ContextMenuItem[]) : []),
-    ...(live ? ([{ kind: "separator" }] as ContextMenuItem[]) : []),
+    // Two gates, for two different reasons. `live`, because both dialogs list
+    // what is in a database and there is nothing to list without a session.
+    // `!keyspace`, because a flat keyspace has no relations to dump and no
+    // statements to run back in — `Capabilities` says so and the driver would
+    // refuse, and a menu entry that opens a dialog the driver will not serve is
+    // worse than no entry at all.
+    ...(live && !keyspace
+      ? ([
+          {
+            kind: "item",
+            id: "export",
+            // Not "Export database…": the dialog opens with nothing picked,
+            // and a label promising the whole database would be a promise the
+            // first thing the user sees does not keep.
+            label: "Export tables…",
+            ...(active ? { hint: "⌘⇧E" } : {}),
+          },
+          {
+            kind: "item",
+            id: "import",
+            label: "Import SQL file…",
+            ...(active ? { hint: "⌘⇧I" } : {}),
+          },
+          { kind: "separator" },
+        ] as ContextMenuItem[])
+      : []),
+    ...(live
+      ? ([
+          { kind: "item", id: "disconnect", label: "Disconnect" },
+          { kind: "separator" },
+        ] as ContextMenuItem[])
+      : []),
     { kind: "item", id: "delete", label: "Delete connection…", danger: true },
   ];
 }
@@ -369,6 +419,14 @@ export function Sidebar() {
    */
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [deleting, setDeleting] = useState<ConnectionConfig | null>(null);
+  /**
+   * The database row a menu was opened on.
+   *
+   * Its own state rather than a third field on one: the three menus are about
+   * three different things, and a single nullable object holding whichever was
+   * last clicked is how a menu ends up acting on the row before it.
+   */
+  const [dbMenu, setDbMenu] = useState<{ x: number; y: number; name: string } | null>(null);
   const [pending, setPending] = useState<PendingAction | null>(null);
   const [width, setWidth] = useState(loadWidth);
   const dragRef = useRef<{ startX: number; startW: number } | null>(null);
@@ -478,6 +536,7 @@ export function Sidebar() {
   const toggleSelected = useApp((s) => s.toggleSelected);
   const selectRange = useApp((s) => s.selectRange);
   const setExportTarget = useApp((s) => s.setExportTarget);
+  const setImportTarget = useApp((s) => s.setImportTarget);
 
   const needle = filter.trim().toLowerCase();
   const activeSchemas = activeConnectionId ? (schemas[activeConnectionId] ?? []) : [];
@@ -657,10 +716,60 @@ export function Sidebar() {
       openObjectTab(target.id, { schema, name: schema, kind: "diagram" });
       return;
     }
+    if (id === "edit") {
+      setSheet(true, target);
+      return;
+    }
+    // Both act on the row that was right-clicked, not on the active
+    // connection: the export dialog reads the tree of whichever connection it
+    // is given, so a database two rows down needs no switching to first.
+    if (id === "export") {
+      setExportTarget({ connectionId: target.id, keys: [] });
+      return;
+    }
+    if (id === "import") {
+      setImportTarget({ connectionId: target.id, path: null });
+      return;
+    }
     if (id === "disconnect") void disconnect(target.id);
     // Deleting takes the stored password and any derived connection with it,
     // so it goes in front of the user first.
     if (id === "delete") setDeleting(target);
+  }
+
+  function chooseDatabase(id: string) {
+    const name = dbMenu?.name;
+    setDbMenu(null);
+    if (!name || !activeConnectionId) return;
+    if (id === "export") void exportDatabase(activeConnectionId, name);
+  }
+
+  /**
+   * Exports a database that may not be the one this session is in.
+   *
+   * The export dialog lists the schemas and tables the store holds, and the
+   * store holds the *open* database's. So the database is opened first, which
+   * is a second connection to the same server and the same thing clicking the
+   * row does — there is no cheaper way to know what is in a database than to
+   * open it.
+   *
+   * Opening derives its own connection id, so the dialog is pointed at
+   * whichever connection came out of it rather than at the row that was
+   * right-clicked. Read after the await, because everything above this closed
+   * over the state as it was before.
+   */
+  async function exportDatabase(fromConnectionId: string, name: string) {
+    if (open[fromConnectionId]?.currentDatabase !== name) {
+      await openDatabase(fromConnectionId, name);
+    }
+    const state = useApp.getState();
+    const id = state.activeConnectionId;
+    // Opening reports its own failure. Putting a dialog in front of a database
+    // that never opened would list the tables of the one still connected.
+    if (!id || state.open[id]?.currentDatabase !== name) return;
+    // Nothing preselected: the dialog carries the whole tree, and "everything
+    // in this database" is a decision to make there rather than to assume.
+    setExportTarget({ connectionId: id, keys: [] });
   }
 
   async function choose(id: string) {
@@ -970,6 +1079,10 @@ export function Sidebar() {
                           disabled={opening}
                           aria-busy={opening || undefined}
                           onClick={() => void openDatabase(activeConnectionId, name)}
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            setDbMenu({ x: e.clientX, y: e.clientY, name });
+                          }}
                           className="flex w-full items-center gap-2 rounded py-1 pr-1.5 pl-5 text-left text-[12px] text-ink-muted hover:bg-hover hover:text-ink"
                         >
                           {opening ? (
@@ -1115,10 +1228,24 @@ export function Sidebar() {
           y={connMenu.y}
           items={connectionMenuItems(
             !!open[connMenu.config.id],
+            connMenu.config.id === activeConnectionId,
+            isKeyspaceDriver(connMenu.config.driver),
             schemas[connMenu.config.id] ?? [],
           )}
           onSelect={chooseConnection}
           onClose={() => setConnMenu(null)}
+        />
+      )}
+
+      {dbMenu && (
+        <ContextMenu
+          x={dbMenu.x}
+          y={dbMenu.y}
+          // No shortcut hint on this one. ⌘⇧E exports whatever connection is
+          // active, which is not this row until the database has been opened.
+          items={[{ kind: "item", id: "export", label: "Export tables…" }]}
+          onSelect={chooseDatabase}
+          onClose={() => setDbMenu(null)}
         />
       )}
 

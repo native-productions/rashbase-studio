@@ -60,8 +60,24 @@ pub enum Error {
     /// The user stopped an export while it was running. Coded so the frontend
     /// can say "stopped" rather than showing it as a failure: nothing went
     /// wrong, and the partial file has already been removed.
-    #[error("Export stopped.")]
+    #[error("Stopped.")]
     Cancelled,
+
+    /// A statement in an imported file that the server refused.
+    ///
+    /// The database's own words are carried through untouched, the way every
+    /// other failure here is. What this variant adds is `context`: where in the
+    /// file the statement was. That travels in its own field rather than being
+    /// worked into the message, so nothing the user reads as Postgres' answer
+    /// is something this application wrote.
+    #[error("{message}")]
+    Import {
+        message: String,
+        code: Option<String>,
+        detail: Option<String>,
+        hint: Option<String>,
+        context: String,
+    },
 
     #[error("{0}")]
     Other(String),
@@ -163,6 +179,11 @@ struct ErrorPayload<'a> {
     detail: Option<&'a str>,
     hint: Option<&'a str>,
     position: Option<u32>,
+    /// Where the failure was, in this application's words rather than the
+    /// server's — the line of a file, so far only an import has one. Kept apart
+    /// from `message`, `detail` and `hint` so those stay purely what the
+    /// database said.
+    context: Option<&'a str>,
 }
 
 impl Serialize for Error {
@@ -180,6 +201,7 @@ impl Serialize for Error {
                 detail: detail.as_deref(),
                 hint: hint.as_deref(),
                 position: *position,
+                context: None,
             },
             // Coded so the frontend can reopen the connection sheet rather than
             // leaving the user with a toast and no way forward.
@@ -189,6 +211,7 @@ impl Serialize for Error {
                 detail: None,
                 hint: Some(platform),
                 position: None,
+                context: None,
             },
             Error::Cancelled => ErrorPayload {
                 message: self.to_string(),
@@ -196,6 +219,7 @@ impl Serialize for Error {
                 detail: None,
                 hint: None,
                 position: None,
+                context: None,
             },
             Error::AuthRefused(_) => ErrorPayload {
                 message: self.to_string(),
@@ -203,6 +227,7 @@ impl Serialize for Error {
                 detail: None,
                 hint: None,
                 position: None,
+                context: None,
             },
             Error::SshSecretRequired(_) => ErrorPayload {
                 message: self.to_string(),
@@ -210,6 +235,21 @@ impl Serialize for Error {
                 detail: None,
                 hint: None,
                 position: None,
+                context: None,
+            },
+            Error::Import {
+                code,
+                detail,
+                hint,
+                context,
+                ..
+            } => ErrorPayload {
+                message: self.to_string(),
+                code: code.as_deref(),
+                detail: detail.as_deref(),
+                hint: hint.as_deref(),
+                position: None,
+                context: Some(context),
             },
             _ => ErrorPayload {
                 message: self.to_string(),
@@ -217,6 +257,7 @@ impl Serialize for Error {
                 detail: None,
                 hint: None,
                 position: None,
+                context: None,
             },
         };
         payload.serialize(s)

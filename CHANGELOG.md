@@ -6,6 +6,53 @@ how; this is the record of what.
 Releases before 0.3.0 are on the
 [releases page](https://github.com/native-productions/rashbase-studio/releases).
 
+## Unreleased
+
+### `⌘R` refreshes the tree as well as the result
+
+It re-reads the connection list, the active connection's databases where the
+sidebar lists them, its schemas, and the contents of the schemas that are open.
+Until now the tree was read once when a connection opened, so a table created by
+a migration in another window was invisible until the session was closed and
+opened again.
+
+Scoped to what is drawn: databases only where they are listed, and only the
+schemas that are expanded. The result set still re-runs, so the two halves of
+the window cannot end up disagreeing about what exists.
+
+### Import from a `.sql` file
+
+`⌘⇧I`, the connection's context menu, or a `.sql` file dropped on the window.
+The file is read and counted first — how many statements of each kind, which
+relations in the order the file names them, whether an ORM wrote it — without
+opening a connection or running anything.
+
+Four things it does that a plain `psql -f` does not, each a switch with the
+reason it exists written under it:
+
+- **Holds foreign keys until the end.** A dump written table by table puts a
+  child row on the wire before its parent, and the key refuses it even though
+  the file read to the end is consistent. Held with
+  `session_replication_role` where the server allows it and by deferring each
+  key where it does not; the summary says which, because the server decides.
+- **Skips ownership and grants.** `OWNER TO` and `GRANT` name roles on the
+  server the dump came from, not this one.
+- **Leaves migration history alone.** Prisma's `_prisma_migrations`, Drizzle's
+  `__drizzle_migrations` and TypeORM's tables are created but their rows are
+  not imported: they are the other server's account of which migrations ran.
+- **Resets sequences.** An auto-incrementing column restored with its values
+  leaves its sequence where it was, and the *application's* next insert
+  collides on the primary key — hours later, looking like a different bug.
+
+The whole file runs in one transaction, including the `COPY … FROM stdin` data
+blocks pg_dump writes. A statement the server refuses rolls all of it back and
+is reported in the server's own words with the line of the file it was on.
+`.sql.gz` is read without unpacking it first, decided by the file's own magic
+number rather than its name.
+
+The file's own `BEGIN;` and `COMMIT;` are not run — the import owns the
+transaction, and a `COMMIT` inside the file would end it partway through.
+
 ## 0.3.0
 
 ### BullMQ queues

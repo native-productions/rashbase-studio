@@ -40,6 +40,24 @@ production replica in the same session, and wants the tool to disappear.
   moved on from
 - Export results to CSV, JSON or SQL
 
+**Move a database**
+
+- Export tables as SQL or CSV, one file or one per table, optionally gzipped. A
+  safe export is written in restore order, guards every statement and upserts
+  its rows, so it can be run into an empty database, into one that already
+  holds part of it, or twice
+- Import a `.sql` file — dropped on the window or chosen — from this app,
+  TablePlus, pg_dump or anything else. What is in the file is read and counted
+  before anything runs
+- The import holds foreign keys until the end, so a dump written table by table
+  loads whatever order its rows are in; skips statements naming roles that only
+  exist on the server the dump came from; leaves an ORM's migration history to
+  the database it is being imported into; and moves every identity sequence past
+  the keys the dump carried, which is what stops the *application's* next insert
+  from colliding
+- One transaction. A statement the server refuses rolls back the whole file and
+  is reported in the server's own words, with the line it was on
+
 **Understand**
 
 - Entity-relationship diagram built from the live catalogue
@@ -185,11 +203,15 @@ handle macOS for you. If you downloaded an installer by hand:
 
 ```sh
 bun install
-bun run tauri dev     # run it
+bun run app           # run it
 bun run tauri build   # package it
 ```
 
 Needs [Bun](https://bun.sh), Rust stable, and Xcode Command Line Tools on macOS.
+
+`bun run app` runs under its own bundle identifier, so a build from source keeps
+its connections, preferences and saved passwords separate from an installed copy
+of the app. You can run both at once.
 
 ## Contributing
 

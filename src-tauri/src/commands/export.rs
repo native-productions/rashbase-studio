@@ -357,7 +357,7 @@ pub async fn export_target_exists(
 /// Asks a running export to stop. Silent when it has already finished.
 #[tauri::command]
 pub async fn cancel_export(db: State<'_, DbState>, job_id: String) -> Result<()> {
-    db.cancel_export(&job_id).await;
+    db.cancel_job(&job_id).await;
     Ok(())
 }
 

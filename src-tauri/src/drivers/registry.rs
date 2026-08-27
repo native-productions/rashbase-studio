@@ -17,9 +17,10 @@ use crate::drivers::redis::bull::{
 use crate::drivers::redis::{RedisDriver, RedisSession};
 use crate::drivers::types::{
     ColumnInfo, ConnectionConfig, ConnectionInfo, DumpStats, ExportRequest, FunctionEntry,
-    IndexInfo, KeyFilter, KeyPage, QueryResult, RowCount, SchemaEntry, SchemaGraph, TableEntry,
+    ImportRequest, ImportStats, IndexInfo, KeyFilter, KeyPage, QueryResult, RowCount, SchemaEntry,
+    SchemaGraph, TableEntry,
 };
-use crate::drivers::{Driver, DumpWriter, Session};
+use crate::drivers::{Driver, DumpWriter, ImportProgress, Session};
 use crate::error::{Error, Result};
 use crate::ssh::{self, Tunnel};
 
@@ -38,14 +39,18 @@ struct Open {
 pub struct DbState {
     drivers: HashMap<&'static str, Arc<dyn Driver>>,
     sessions: RwLock<HashMap<String, Open>>,
-    /// The stop flag of each export in flight, keyed by the job id the caller
-    /// made.
+    /// The stop flag of each export or import in flight, keyed by the job id
+    /// the caller made.
     ///
-    /// A flag rather than an abort handle: the dump reads it between rows and
-    /// returns, so it unwinds through its own error path and the caller still
-    /// gets to delete what was written. Killing the task instead would leave a
-    /// half-written file behind looking finished.
-    exports: RwLock<HashMap<String, Arc<AtomicBool>>>,
+    /// A flag rather than an abort handle: the work reads it between rows or
+    /// between statements and returns, so it unwinds through its own error
+    /// path — which is what lets an export delete the file it half wrote and an
+    /// import roll its transaction back. Killing the task instead would leave
+    /// a half-written file looking finished, or a half-applied dump committed.
+    ///
+    /// One map for both, because a job id is a job id: two would be two ways to
+    /// leave a Stop button wired to nothing.
+    jobs: RwLock<HashMap<String, Arc<AtomicBool>>>,
 }
 
 impl Default for DbState {
@@ -56,7 +61,7 @@ impl Default for DbState {
         Self {
             drivers: drivers.into_iter().map(|d| (d.id(), d)).collect(),
             sessions: RwLock::default(),
-            exports: RwLock::default(),
+            jobs: RwLock::default(),
         }
     }
 }
@@ -162,20 +167,41 @@ impl DbState {
         out: &mut dyn DumpWriter,
     ) -> Result<DumpStats> {
         let session = self.session(id).await?;
-        let cancel = Arc::new(AtomicBool::new(false));
-        self.exports
-            .write()
-            .await
-            .insert(job_id.to_string(), cancel.clone());
+        let cancel = self.claim(job_id).await;
         let result = session.dump(req, out, &cancel).await;
-        self.exports.write().await.remove(job_id);
+        self.jobs.write().await.remove(job_id);
         result
     }
 
-    /// Asks an export to stop. Silent when the job has already finished, which
+    /// Runs an import, registering its stop flag the same way an export does.
+    pub async fn import(
+        &self,
+        id: &str,
+        job_id: &str,
+        req: &ImportRequest,
+        progress: &mut dyn ImportProgress,
+    ) -> Result<ImportStats> {
+        let session = self.session(id).await?;
+        let cancel = self.claim(job_id).await;
+        let result = session.import(req, &cancel, progress).await;
+        self.jobs.write().await.remove(job_id);
+        result
+    }
+
+    /// Registers a stop flag under a job id and hands it back.
+    async fn claim(&self, job_id: &str) -> Arc<AtomicBool> {
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.jobs
+            .write()
+            .await
+            .insert(job_id.to_string(), cancel.clone());
+        cancel
+    }
+
+    /// Asks a running job to stop. Silent when it has already finished, which
     /// is what a Stop pressed a moment too late looks like.
-    pub async fn cancel_export(&self, job_id: &str) {
-        if let Some(flag) = self.exports.read().await.get(job_id) {
+    pub async fn cancel_job(&self, job_id: &str) {
+        if let Some(flag) = self.jobs.read().await.get(job_id) {
             flag.store(true, Ordering::Relaxed);
         }
     }

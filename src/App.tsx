@@ -7,12 +7,14 @@ import { CellModal } from "@/components/grid/CellModal";
 import { CommandPalette } from "@/components/palette/CommandPalette";
 import { ConnectionSheet } from "@/components/connection/ConnectionSheet";
 import { ExportDialog } from "@/components/export/ExportDialog";
+import { ImportDialog } from "@/components/import/ImportDialog";
 import { SettingsSheet } from "@/components/settings/SettingsSheet";
 import { LockScreen } from "@/components/shell/LockScreen";
 import { ErrorDialog } from "@/components/ui/ErrorDialog";
 import { Logo } from "@/components/Logo";
 import { useHotkeys } from "@/lib/hotkeys";
 import { useAppMenu } from "@/lib/appMenu";
+import { useSqlFileDrop } from "@/lib/sqlDrop";
 import { savePinnedTabs } from "@/lib/pinnedTabs";
 import { useApp } from "@/store/app";
 
@@ -78,6 +80,7 @@ function EmptyState() {
 export default function App() {
   useHotkeys();
   useAppMenu();
+  useSqlFileDrop();
 
   const loadConnections = useApp((s) => s.loadConnections);
   const loadSecurity = useApp((s) => s.loadSecurity);
@@ -237,11 +240,17 @@ export default function App() {
       <CellModal />
       <ConnectionSheet />
       <ExportDialog />
+      <ImportDialog />
       <SettingsSheet />
       <ErrorDialog />
 
+      {/* Above every dialog, not merely above the app. Each sheet is a z-40
+          scrim under z-50 content, and a toast with no z-index of its own loses
+          to both — so anything raised while a dialog was open (an import
+          finishing, a connection refused) was painted over by the scrim and
+          never seen. */}
       {toast && (
-        <div className="fixed right-4 bottom-9 max-w-96 rounded-md border border-line bg-overlay px-3 py-2 text-[12px] text-ink shadow-lg shadow-black/40">
+        <div className="fixed right-4 bottom-9 z-[60] max-w-96 rounded-md border border-line bg-overlay px-3 py-2 text-[12px] text-ink shadow-lg shadow-black/40">
           <span className={toast.kind === "error" ? "text-danger" : "text-accent"}>
             {toast.kind === "error" ? "Error" : "Note"}
           </span>

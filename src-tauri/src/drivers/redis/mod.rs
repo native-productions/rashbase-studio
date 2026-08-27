@@ -80,6 +80,7 @@ impl Driver for RedisDriver {
             row_edit: true,
             cancel: false,
             export: false,
+            import: false,
             keyspace: true,
         }
     }

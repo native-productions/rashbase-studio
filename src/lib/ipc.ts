@@ -18,6 +18,9 @@ import type {
   ExportLayout,
   ExportRequest,
   ExportSummary,
+  ImportPreflight,
+  ImportRequest,
+  ImportSummary,
   FunctionEntry,
   IndexInfo,
   JobPage,
@@ -126,6 +129,22 @@ export const ipc = {
     invoke<ExportSummary>("export_objects", { id, jobId, req }),
 
   cancelExport: (jobId: string) => invoke<void>("cancel_export", { jobId }),
+
+  /**
+   * Reads a `.sql` file and reports what is in it. No connection is opened and
+   * nothing is run: this is what the dialog shows before the user decides.
+   */
+  importInspect: (path: string) => invoke<ImportPreflight>("import_inspect", { path }),
+
+  /**
+   * Runs a file against the connection, in one transaction. Progress arrives
+   * as `import://progress` until this promise settles. A failure means nothing
+   * was applied.
+   */
+  importSql: (id: string, jobId: string, req: ImportRequest) =>
+    invoke<ImportSummary>("import_sql", { id, jobId, req }),
+
+  cancelImport: (jobId: string) => invoke<void>("cancel_import", { jobId }),
 
   /**
    * Whether these settings would replace something already on disk. Asked of

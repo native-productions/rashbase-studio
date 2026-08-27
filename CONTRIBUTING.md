@@ -12,7 +12,7 @@ is a discussion, not a patch.
 
 ```sh
 bun install
-bun run tauri dev          # the full app
+bun run app                # the full app, as a development build
 bun run dev                # frontend only, port 1420
 bun run build              # tsc --noEmit && vite build
 ```

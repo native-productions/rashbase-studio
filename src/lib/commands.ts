@@ -206,12 +206,29 @@ export const COMMANDS: Command[] = [
     },
   },
   {
-    id: "query.refresh",
-    label: "Refresh result",
-    group: "Query",
+    id: "view.refresh",
+    label: "Refresh",
+    group: "View",
     keys: "⌘R",
-    enabled: () => !!activeTab(s()),
+    /**
+     * Both halves of what is on screen, because both go stale and the user is
+     * asking about the same thing either way: a table created by a migration
+     * in another window is missing from the tree *and* absent from the result.
+     * Refreshing one and leaving the other is how the two end up disagreeing.
+     *
+     * The tree read is scoped to what is drawn — the connection list, the
+     * databases only where they are listed, and only the schemas the user has
+     * open — so this stays proportionate to a key pressed often.
+     *
+     * No `enabled` gate, and that is load bearing. `hotkeys.ts` lets a disabled
+     * command fall through so a second command can claim the same key, and
+     * nothing else claims ⌘R — so on an empty window the keystroke would reach
+     * the webview, which reloads the page and takes every open tab with it.
+     * There is also always something to do: the connection list is read off
+     * disk and can have changed with nothing connected at all.
+     */
     run: () => {
+      void s().refreshTree();
       const tab = activeTab(s());
       if (tab) void s().runQuery(tab.id);
     },
@@ -283,6 +300,22 @@ export const COMMANDS: Command[] = [
       const { selection } = s();
       const keys = selection.connectionId === connectionId ? selection.keys : [];
       s().setExportTarget({ connectionId, keys });
+    },
+  },
+
+  {
+    id: "import.sql",
+    label: "Import SQL file…",
+    group: "Query",
+    // Beside the export's ⌘⇧E. Neither is a daily action, and ⌘I is italics
+    // everywhere a person has ever typed into a box.
+    keys: "⌘⇧I",
+    enabled: () => !!s().activeConnectionId,
+    run: () => {
+      const connectionId = s().activeConnectionId;
+      if (!connectionId) return;
+      // No file yet: the dialog is where one is chosen or dropped.
+      s().setImportTarget({ connectionId, path: null });
     },
   },
 

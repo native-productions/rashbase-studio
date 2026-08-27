@@ -496,6 +496,116 @@ pub struct DumpStats {
     pub tables: usize,
 }
 
+// ---------------------------------------------------------------------------
+// Import
+// ---------------------------------------------------------------------------
+
+/// What running a `.sql` file against this connection should do beyond running
+/// it.
+///
+/// Every field is a switch in the dialog, and every one of them exists because
+/// a dump written by another tool against another server fails without it. The
+/// defaults are all `true`: the file is being moved between servers, which is
+/// the only reason anyone opens this dialog.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportRequest {
+    /// Chosen through the native picker or dropped on the window, so it is a
+    /// real path. The backend reads it; the webview never holds the file.
+    pub path: String,
+    /// Whether foreign keys are checked once at the end rather than row by row.
+    ///
+    /// The whole reason a dump written table by table fails on another server:
+    /// a child row reaches the server before its parent, and the key refuses it
+    /// even though the file, read to the end, is consistent.
+    #[serde(default)]
+    pub hold_foreign_keys: bool,
+    /// Whether `OWNER TO`, `GRANT`, `REVOKE` and role statements are skipped.
+    /// They name roles that exist on the server the dump came from.
+    #[serde(default)]
+    pub skip_ownership: bool,
+    /// Whether rows of the ORM's own migration table are skipped. The table is
+    /// still created; only its rows are left to this database.
+    #[serde(default)]
+    pub skip_migration_history: bool,
+    /// Whether every identity and `serial` sequence is moved past the highest
+    /// value imported once the file has run.
+    #[serde(default)]
+    pub reset_sequences: bool,
+    /// What the preflight read off the file: "Prisma", "Drizzle", "TypeORM",
+    /// or nothing. It decides which table `skip_migration_history` means, and
+    /// it is sent back rather than worked out twice so the dialog and the
+    /// import can never disagree about which table that is.
+    #[serde(default)]
+    pub orm: Option<String>,
+    /// What the preflight counted, used as the denominator for progress. Zero
+    /// means the dialog did not run one, and progress reports statements
+    /// without a total rather than inventing one.
+    #[serde(default)]
+    pub total_statements: usize,
+}
+
+/// What an import did, for the sentence shown when it finishes.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportSummary {
+    pub statements: usize,
+    pub skipped: usize,
+    pub rows: u64,
+    pub sequences_reset: usize,
+    /// How the foreign keys were actually held, or `None` if they were not.
+    ///
+    /// Two mechanisms can deliver what the switch asked for and the server
+    /// decides which one is available. Reporting the outcome as if only one
+    /// existed would be a claim rather than a measurement.
+    pub key_hold: Option<String>,
+    pub duration_ms: u64,
+}
+
+/// What is in a file, read without touching the database.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportPreflight {
+    /// Size on disk. The compressed size when the file is gzipped, because
+    /// that is the number the file manager shows.
+    pub bytes: u64,
+    pub compressed: bool,
+    pub statements: usize,
+    /// `[("insert", 1204), ("create", 38)]`, in descending order.
+    pub by_kind: Vec<(String, usize)>,
+    /// Schema-qualified, in the order the file names them, with how many
+    /// statements each carries. File order is the information: it is the order
+    /// that was going to fail.
+    ///
+    /// Capped, so a file naming eight hundred relations does not become a list
+    /// nobody reads. `table_count` is the real number, and the dialog says so
+    /// rather than letting a truncated list look complete.
+    pub tables: Vec<(String, usize)>,
+    /// How many distinct relations the file names, whether or not they all fit
+    /// in `tables`.
+    pub table_count: usize,
+    pub schemas: Vec<String>,
+    pub uses_copy: bool,
+    /// "Prisma", "Drizzle" or "TypeORM", read off the bookkeeping table the
+    /// tool writes into its own schema.
+    pub orm: Option<String>,
+    pub ownership_statements: usize,
+    pub migration_rows: usize,
+    /// Set when the file could not be read to the end, with the line it
+    /// stopped on. The dialog shows it and refuses to run.
+    pub parse_error: Option<String>,
+}
+
+/// What one import applied, before the command turns it into a summary.
+#[derive(Debug, Clone, Default)]
+pub struct ImportStats {
+    pub statements: usize,
+    pub skipped: usize,
+    pub rows: u64,
+    pub sequences_reset: usize,
+    pub key_hold: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

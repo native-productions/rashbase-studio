@@ -1,0 +1,17 @@
+{
+  // Merged over tauri.conf.json by `bun run app`, and the only thing that
+  // separates a development build from an installed one.
+  //
+  // `identifier` is what decides `app_config_dir()`, which is where
+  // connections.json, security.json and the development credential file live,
+  // and it is also what the webview keys its local storage by. Sharing it means
+  // a `tauri dev` session writing into the installed app's connections and
+  // preferences — which is how a half-finished feature ends up editing the
+  // connection list someone actually uses.
+  //
+  // Deliberately only these two keys. `--config` merges objects but *replaces*
+  // arrays, so restating any part of `app.windows` here would silently drop
+  // every window property this file does not repeat.
+  "productName": "Rashbase Studio Dev",
+  "identifier": "id.rashgaroth.rashbase-studio-dev"
+}

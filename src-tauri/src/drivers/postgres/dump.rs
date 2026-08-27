@@ -48,7 +48,7 @@ const CANCEL_CHECK_EVERY: u64 = 512;
 /// they are quoted server-side. Without this an identifier containing an
 /// apostrophe would end the literal early and the generated statement would be
 /// nonsense at best.
-fn sql_literal(value: &str) -> String {
+pub(super) fn sql_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 

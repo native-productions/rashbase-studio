@@ -13,6 +13,7 @@
 mod catalog;
 mod connections;
 mod export;
+mod import;
 mod query;
 mod security;
 mod session;
@@ -20,6 +21,7 @@ mod session;
 pub use catalog::*;
 pub use connections::*;
 pub use export::*;
+pub use import::*;
 pub use query::*;
 pub use security::*;
 pub use session::*;

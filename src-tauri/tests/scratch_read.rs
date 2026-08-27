@@ -8,7 +8,7 @@ async fn dump() {
         id: "scratch".into(), driver: "redis".into(), name: "scratch".into(),
         host, port: 6379, user: "".into(), database: "11".into(),
         ssl_mode: SslMode::Disable, environment: Some("local".into()),
-        parent_id: None, ssh: None,
+        parent_id: None, require_biometric: false, ssh: None,
     };
     let db = DbState::default();
     db.connect(&config, None, None).await.unwrap();

@@ -59,27 +59,40 @@ pub fn delete_password(app: &AppHandle, connection_id: &str) -> Result<()> {
 mod imp {
     use super::*;
 
-    const SERVICE: &str = "id.rashgaroth.rashbase-studio";
-
-    fn entry(connection_id: &str) -> Result<keyring::Entry> {
-        Ok(keyring::Entry::new(SERVICE, connection_id)?)
+    /// The keystore service these entries live under: the bundle identifier,
+    /// read from the running configuration rather than written out again here.
+    ///
+    /// It has to follow the identifier, because the identifier is what
+    /// separates one build of this app from another — `tauri.dev.conf.json5`
+    /// changes it so a development build cannot reach an installed app's data.
+    /// A literal here would be a second copy of that decision that does not
+    /// move when the first one does, and the failure would be silent: a build
+    /// with its own config directory quietly sharing the real app's passwords.
+    ///
+    /// This resolves to exactly the string that used to be written here for a
+    /// normal release build, so nothing already stored is orphaned.
+    fn entry(app: &AppHandle, connection_id: &str) -> Result<keyring::Entry> {
+        Ok(keyring::Entry::new(
+            &app.config().identifier,
+            connection_id,
+        )?)
     }
 
-    pub fn set_password(_app: &AppHandle, connection_id: &str, password: &str) -> Result<()> {
-        entry(connection_id)?.set_password(password)?;
+    pub fn set_password(app: &AppHandle, connection_id: &str, password: &str) -> Result<()> {
+        entry(app, connection_id)?.set_password(password)?;
         Ok(())
     }
 
-    pub fn get_password(_app: &AppHandle, connection_id: &str) -> Result<Option<String>> {
-        match entry(connection_id)?.get_password() {
+    pub fn get_password(app: &AppHandle, connection_id: &str) -> Result<Option<String>> {
+        match entry(app, connection_id)?.get_password() {
             Ok(p) => Ok(Some(p)),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(e) => Err(Error::CredentialUnreadable(e.to_string())),
         }
     }
 
-    pub fn delete_password(_app: &AppHandle, connection_id: &str) -> Result<()> {
-        match entry(connection_id)?.delete_credential() {
+    pub fn delete_password(app: &AppHandle, connection_id: &str) -> Result<()> {
+        match entry(app, connection_id)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(e) => Err(e.into()),
         }

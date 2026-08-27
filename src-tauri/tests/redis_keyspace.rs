@@ -51,6 +51,7 @@ fn env_config() -> Option<(ConnectionConfig, Option<String>)> {
             ssl_mode: SslMode::Disable,
             environment: Some("local".into()),
             parent_id: None,
+        require_biometric: false,
             ssh: None,
         },
         std::env::var("RASHBASE_REDIS_PASSWORD").ok(),

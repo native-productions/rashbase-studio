@@ -329,6 +329,14 @@ interface AppState {
    * that, including which objects end up checked.
    */
   exportTarget: { connectionId: string; keys: string[] } | null;
+  /**
+   * The import dialog, and the file it is pointed at.
+   *
+   * `path` is part of the target rather than dialog state because a file can be
+   * dropped on the window while the dialog is already open, and the dialog has
+   * to follow it.
+   */
+  importTarget: { connectionId: string; path: string | null } | null;
 
   loadConnections: () => Promise<void>;
   connect: (config: ConnectionConfig, password?: string, sshSecret?: string) => Promise<void>;
@@ -341,7 +349,8 @@ interface AppState {
   deleteConnection: (id: string) => Promise<void>;
 
   setActiveConnection: (id: string) => void;
-  loadDatabases: (connectionId: string) => Promise<void>;
+  /** `reload` re-reads a list already held, which is what a refresh wants. */
+  loadDatabases: (connectionId: string, reload?: boolean) => Promise<void>;
   /** Walks for BullMQ queues. Only when the user opens the section: matching
    *  `<prefix>:*:meta` across a large keyspace is a real cost. */
   loadQueues: (connectionId: string, reload?: boolean) => Promise<void>;
@@ -349,6 +358,16 @@ interface AppState {
   toggleSchema: (connectionId: string, schema: string) => Promise<void>;
   loadAllTables: (connectionId: string) => Promise<void>;
   reloadSchema: (connectionId: string, schema: string) => Promise<void>;
+  /**
+   * Re-reads the sidebar: the connection list, and the active connection's
+   * databases, schemas and open schemas' contents.
+   *
+   * The tree is otherwise read once, when a connection opens. Anything created
+   * outside this app after that — a `prisma migrate` in another window, a
+   * `createdb` in a terminal — is invisible until the session is closed and
+   * opened again, which is a reconnect to see a name.
+   */
+  refreshTree: () => Promise<void>;
   dropObject: (connectionId: string, schema: string, name: string, kind: string) => Promise<void>;
   truncateTable: (connectionId: string, schema: string, name: string) => Promise<void>;
 
@@ -483,6 +502,7 @@ interface AppState {
   selectRange: (connectionId: string, order: string[], key: string) => void;
   clearSelection: () => void;
   setExportTarget: (target: AppState["exportTarget"]) => void;
+  setImportTarget: (target: AppState["importTarget"]) => void;
 
   setToast: (toast: AppState["toast"]) => void;
   setErrorDialog: (dialog: AppState["errorDialog"]) => void;
@@ -504,6 +524,7 @@ export const busyKey = {
   diagram: (connectionId: string, schema: string) => `diagram:${connectionId}::${schema}`,
   tables: (connectionId: string) => `tables:${connectionId}`,
   databases: (connectionId: string) => `databases:${connectionId}`,
+  refresh: (connectionId: string) => `refresh:${connectionId}`,
   keys: (tabId: string) => `keys:${tabId}`,
   queues: (connectionId: string) => `queues:${connectionId}`,
   jobs: (tabId: string) => `jobs:${tabId}`,
@@ -795,6 +816,7 @@ export const useApp = create<AppState>((set, get) => {
   errorDialog: null,
   selection: { connectionId: null, keys: [], anchor: null },
   exportTarget: null,
+  importTarget: null,
 
   loadConnections: async () => {
     try {
@@ -898,7 +920,14 @@ export const useApp = create<AppState>((set, get) => {
             });
           }
         }
-        set({ toast: { kind: "error", text: error.message } });
+        // Not while the sheet is up. It catches this same rejection and puts
+        // the message in its own footer, beside the button that produced it,
+        // which is the better of the two places to read it. A toast as well
+        // would be the same failure reported twice, and the copy that floats
+        // over a modal is the copy the user has no way to act on.
+        if (!get().sheet.open) {
+          set({ toast: { kind: "error", text: error.message } });
+        }
         throw e;
       }
     }),
@@ -973,8 +1002,8 @@ export const useApp = create<AppState>((set, get) => {
    * list is a property of the server, and creating a database while the app is
    * open is rare enough to cost a reconnect.
    */
-  loadDatabases: async (connectionId) => {
-    if (get().databases[connectionId]) return;
+  loadDatabases: async (connectionId, reload = false) => {
+    if (!reload && get().databases[connectionId]) return;
     await track(busyKey.databases(connectionId), "Reading databases…", async () => {
       try {
         const names = await ipc.listDatabases(connectionId);
@@ -1126,6 +1155,51 @@ export const useApp = create<AppState>((set, get) => {
           missing.map(async (s) => [tableKey(connectionId, s.name), await ipc.listTables(connectionId, s.name)] as const),
         );
         set((state) => ({ tables: { ...state.tables, ...Object.fromEntries(loaded) } }));
+      } catch (e) {
+        set({ toast: { kind: "error", text: asDbError(e).message } });
+      }
+    });
+  },
+
+  refreshTree: async () => {
+    // First and unconditionally: the connection list is a file on disk, so
+    // re-reading it costs no round trip and is worth doing even with nothing
+    // connected.
+    await get().loadConnections();
+
+    const id = get().activeConnectionId;
+    const config = get().connections.find((c) => c.id === id);
+    if (!id || !config || !get().open[id]) return;
+
+    await track(busyKey.refresh(id), "Refreshing…", async () => {
+      try {
+        const keyspace = isKeyspaceDriver(config.driver);
+        // Only where the sidebar actually lists databases. A connection that
+        // named one shows its schema instead, and re-reading a list nothing
+        // draws is a round trip for nobody.
+        if (keyspace || isServerOnly(config)) {
+          await get().loadDatabases(id, true);
+        }
+        // A flat keyspace has no schemas and never will; the list above is the
+        // whole tree.
+        if (keyspace) return;
+
+        // Schemas first, and the two reads are not independent: a schema
+        // created since the connection opened is not in the list the sidebar
+        // draws from, and one dropped since has no tables left to ask for.
+        const schemas = await ipc.listSchemas(id);
+        set((s) => ({ schemas: { ...s.schemas, [id]: schemas } }));
+
+        const live = new Set(schemas.map((entry) => entry.name));
+        const open = Object.entries(get().expandedSchemas)
+          .filter(([key, expanded]) => expanded && key.startsWith(`${id}::`))
+          .map(([key]) => key.slice(id.length + 2))
+          .filter((name) => live.has(name));
+
+        // Only the schemas the user has open. Walking all of them would be one
+        // round trip per schema for lists that are not on screen, which on a
+        // database with forty of them is what turns a refresh into a wait.
+        await Promise.all(open.map((name) => get().reloadSchema(id, name)));
       } catch (e) {
         set({ toast: { kind: "error", text: asDbError(e).message } });
       }
@@ -2475,6 +2549,8 @@ export const useApp = create<AppState>((set, get) => {
   clearSelection: () => set({ selection: { connectionId: null, keys: [], anchor: null } }),
 
   setExportTarget: (exportTarget) => set({ exportTarget }),
+
+  setImportTarget: (importTarget) => set({ importTarget }),
 
   setToast: (toast) => set({ toast }),
 

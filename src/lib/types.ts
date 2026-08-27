@@ -237,6 +237,15 @@ export interface DbError {
   hint: string | null;
   /** 1-based character offset into the submitted SQL, when Postgres reports one. */
   position: number | null;
+  /**
+   * Where the failure was, in this application's words rather than the
+   * server's: so far only an import, which reports the line of the file and
+   * the statement that was on it.
+   *
+   * Its own field so `message`, `detail` and `hint` stay purely what the
+   * database said. Absent on every other command.
+   */
+  context?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -331,6 +340,91 @@ export interface ExportProgress {
   table: string;
   done: number;
   total: number;
+}
+
+// ---------------------------------------------------------------------------
+// Import
+// ---------------------------------------------------------------------------
+
+/** What the ORM detector found, and the only values `orm` ever takes. */
+export type Orm = "Prisma" | "Drizzle" | "TypeORM";
+
+/**
+ * What a file holds, read without touching the database.
+ *
+ * Every number here is counted off the file itself, so what the dialog shows
+ * before anything runs cannot disagree with what runs.
+ */
+export interface ImportPreflight {
+  /** Size on disk: the compressed size when the file is gzipped. */
+  bytes: number;
+  compressed: boolean;
+  statements: number;
+  /** `[["insert", 1204], ["create", 38]]`, commonest first. */
+  byKind: [string, number][];
+  /**
+   * Schema-qualified, in the order the file names them, with how many
+   * statements each carries. File order, never sorted: it is the order that
+   * was going to fail.
+   */
+  tables: [string, number][];
+  /**
+   * How many distinct relations the file names. Larger than `tables.length`
+   * when the list was capped, which is why both are here: a truncated list
+   * that looked complete would be the dialog lying about the file.
+   */
+  tableCount: number;
+  schemas: string[];
+  /** Whether any of the data arrives as `COPY … FROM stdin` rather than rows. */
+  usesCopy: boolean;
+  orm: Orm | null;
+  /** `OWNER TO`, `GRANT`, `REVOKE` and role statements. */
+  ownershipStatements: number;
+  /** Rows destined for the ORM's own migration table. */
+  migrationRows: number;
+  /** Set when the file could not be read to the end, naming the line. */
+  parseError: string | null;
+}
+
+export interface ImportRequest {
+  path: string;
+  /** Foreign keys checked once at the end rather than row by row. */
+  holdForeignKeys: boolean;
+  /** Skip statements naming a role that exists on the other server. */
+  skipOwnership: boolean;
+  /** Skip the ORM's migration rows. The table itself is still created. */
+  skipMigrationHistory: boolean;
+  /** Move every identity sequence past the highest value imported. */
+  resetSequences: boolean;
+  /** From the preflight, so the dialog and the import agree on the ORM. */
+  orm: Orm | null;
+  /** From the preflight, as the denominator for progress. */
+  totalStatements: number;
+}
+
+export interface ImportSummary {
+  statements: number;
+  skipped: number;
+  rows: number;
+  sequencesReset: number;
+  /**
+   * How the keys were actually held: `session_replication_role` where the
+   * server allowed it, `deferred` where it did not, `null` when it was not
+   * asked for. Reported rather than assumed — the server decides.
+   */
+  keyHold: string | null;
+  durationMs: number;
+}
+
+/** One `import://progress` event. */
+export interface ImportProgress {
+  jobId: string;
+  statements: number;
+  /** What the preflight counted. Zero when it did not run. */
+  total: number;
+  /** Uncompressed bytes read so far. */
+  bytes: number;
+  table: string;
 }
 
 // ---------------------------------------------------------------------------

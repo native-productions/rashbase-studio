@@ -2,6 +2,8 @@
 
 mod catalog;
 mod dump;
+mod restore;
+mod script;
 mod session;
 mod sql;
 mod types;
@@ -16,6 +18,7 @@ use crate::drivers::types::{ConnectionConfig, ConnectionInfo};
 use crate::drivers::{Capabilities, Driver, Session};
 use crate::error::Result;
 
+pub use restore::preflight;
 pub use session::PgSession;
 
 pub const ID: &str = "postgres";
@@ -43,6 +46,7 @@ impl Driver for PgDriver {
             row_edit: true,
             cancel: true,
             export: true,
+            import: true,
             // Tables, not a flat namespace. The keyspace commands refuse.
             keyspace: false,
         }

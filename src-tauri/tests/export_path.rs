@@ -170,6 +170,7 @@ fn env_config() -> Option<(ConnectionConfig, String)> {
             ssl_mode: SslMode::Prefer,
             environment: Some("local".into()),
             parent_id: None,
+        require_biometric: false,
             ssh: None,
         },
         password,

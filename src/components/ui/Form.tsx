@@ -4,6 +4,13 @@
  * They started inside `ConnectionSheet.tsx` and moved here when the Settings
  * sheet became the second consumer. Two hand-rolled copies of a switch is how
  * the second one ends up a pixel off the first.
+ *
+ * `Field`, `Box` and `Check` arrived the same way, out of `ExportDialog.tsx`
+ * when the import dialog became its peer. The two vocabularies below are not
+ * one: `Row` and `Switch` build a two-column grid that reads across, `Field`
+ * and `Check` build a stack of labelled bands that reads down. A dialog picks
+ * one and stays in it. Mixing them in the same pane is how a form ends up with
+ * two different left edges.
  */
 
 /**
@@ -104,3 +111,109 @@ export function Switch({
   );
 }
 
+/** One labelled band of the form. The label is the only thing that repeats. */
+export function Field({
+  label,
+  note,
+  children,
+}: {
+  label: string;
+  note?: string | null;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="mb-5 flex flex-col gap-2 last:mb-0">
+      <h2 className="label-eyebrow">{label}</h2>
+      {children}
+      {note && <p className="text-[11px] text-ink-faint">{note}</p>}
+    </section>
+  );
+}
+
+/**
+ * A checkbox with a third state for "some of what is under this".
+ *
+ * Drawn rather than native because a native indeterminate box cannot be styled
+ * to sit in this palette, and the three states have to be told apart at 13px.
+ */
+export function Box({
+  state,
+  label,
+  onToggle,
+  disabled = false,
+}: {
+  state: "on" | "off" | "some";
+  label: string;
+  onToggle: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <span
+      role="checkbox"
+      aria-checked={state === "some" ? "mixed" : state === "on"}
+      aria-label={label}
+      aria-disabled={disabled || undefined}
+      tabIndex={disabled ? -1 : 0}
+      onClick={(e) => {
+        e.stopPropagation();
+        if (!disabled) onToggle();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === " " || e.key === "Enter") {
+          e.preventDefault();
+          if (!disabled) onToggle();
+        }
+      }}
+      className={[
+        "flex size-3.5 shrink-0 items-center justify-center rounded-[3px] border",
+        disabled ? "opacity-40" : "",
+        state === "off"
+          ? "border-line bg-transparent"
+          : "border-accent bg-accent-fill text-on-accent",
+      ].join(" ")}
+    >
+      {state === "on" && (
+        <svg width="9" height="9" viewBox="0 0 9 9" aria-hidden="true">
+          <path
+            d="M1.5 4.5l2 2 4-4"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      )}
+      {state === "some" && <span className="h-0.5 w-1.5 rounded-full bg-canvas" />}
+    </span>
+  );
+}
+
+export function Check({
+  checked,
+  label,
+  onChange,
+  disabled = false,
+}: {
+  checked: boolean;
+  label: string;
+  onChange: (value: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <label
+      className={[
+        "flex w-fit items-center gap-2 text-[12px]",
+        disabled ? "text-ink-faint" : "cursor-default text-ink-muted hover:text-ink",
+      ].join(" ")}
+    >
+      <Box
+        state={checked ? "on" : "off"}
+        label={label}
+        disabled={disabled}
+        onToggle={() => onChange(!checked)}
+      />
+      {label}
+    </label>
+  );
+}
