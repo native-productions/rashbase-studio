@@ -6,7 +6,7 @@ how; this is the record of what.
 Releases before 0.3.0 are on the
 [releases page](https://github.com/native-productions/rashbase-studio/releases).
 
-## Unreleased
+## 0.4.0
 
 ### `⌘R` refreshes the tree as well as the result
 
